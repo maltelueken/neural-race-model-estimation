@@ -81,7 +81,7 @@ inference_network = bf.networks.CouplingFlow(
 approximator = bf.ContinuousApproximator(
     inference_network=inference_network,
     adapter=adapter,
-    standardize="all"
+    standardize="inference_conditions"
 )
 
 epochs = 100
