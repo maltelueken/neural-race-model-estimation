@@ -73,8 +73,11 @@ adapter = (
 )
 
 inference_network = bf.networks.CouplingFlow(
+    base_distribution=bf.distributions.DiagonalStudentT(df=50),
     subnet_kwargs=dict(
-        dropout=0.0
+        dropout=0.0,
+        depth=12,
+        transform="spline",
     )
 )
 
@@ -86,7 +89,7 @@ approximator = bf.ContinuousApproximator(
 
 epochs = 100
 num_batches = 500
-batch_size = 128
+batch_size = 64
 learning_rate = keras.optimizers.schedules.CosineDecay(5e-4, decay_steps=epochs*num_batches, alpha=1e-6)
 optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0)
 approximator.compile(optimizer=optimizer)
@@ -96,5 +99,5 @@ history = approximator.fit(
     num_batches=num_batches,
     batch_size=batch_size,
     simulator=simulator,
-    callbacks=[keras.callbacks.ModelCheckpoint("rdmc_nle.keras", monitor="loss", mode="min", save_best_only=True)]
+    callbacks=[keras.callbacks.ModelCheckpoint("rdmc_nle_spline_student_deep.keras", monitor="loss", mode="min", save_best_only=True)]
 )
