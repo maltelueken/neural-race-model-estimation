@@ -78,7 +78,7 @@ def create_pushforward_plot_rdmc(data):
     return fig, (ax1, ax2)
 
 
-def create_profile_likelihood_plot(ll_fun, test_data, approximator, prior_draws, param_names):
+def create_profile_likelihood_plot(ll_fun, prior_draws, param_names):
     p_range = 0.9
     num_points = 100
 
@@ -88,18 +88,16 @@ def create_profile_likelihood_plot(ll_fun, test_data, approximator, prior_draws,
 
     for i in range(len(prior_draws)):
         x[(i*num_points):((i+1)*num_points),i] = p_grid[:, i]
-
-        nle_logdensity_fun = ll_fun(test_data, approximator)
     # ll_prior = nle_logdensity_fun(prior_draws)
 
-    log_prob = jax.vmap(nle_logdensity_fun)(x)
+    log_prob = jax.vmap(ll_fun)(x)
     # log_prob = np.array([nle_logdensity_fun(e) for e in x])
 
     fig, axes = plt.subplots(1, len(param_names), figsize=(15, 3))
 
     for i, ax in enumerate(axes):
         ax.plot(x[(i*num_points):((i+1)*num_points), i], log_prob[(i*num_points):((i+1)*num_points)])
-        ax.plot(prior_draws[i], ll_fun(test_data, approximator)(prior_draws), "o", color="red")
+        ax.plot(prior_draws[i], ll_fun(prior_draws), "o", color="red")
         if param_names is not None:
             ax.set_xlabel(param_names[i])
         ax.set_ylabel("Log-likelihood")

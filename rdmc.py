@@ -72,4 +72,10 @@ def rdmc_experiment_simple(v_c_intercept, v_c_slope, amp, tau, s_true, s_false, 
 
     rt, resp = rdmc_experiment_simple_numba(mu, b, s, float(t0), num_obs, t_max)
 
+    rt /= 1000
+
+    # timed_out = rt == t_max
+    # rt[timed_out] = -1.0
+    # resp[timed_out] = -1
+
     return {"x": np.c_[rt, resp]}

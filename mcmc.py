@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-def model_nle(data, approximator):
+def model_nle(data, approximator, fixed=None):
     num_obs = data["num_obs"]
     adapted = approximator.adapter(data, strict=False, log_det_jac=True, stage="inference")
     data, ldj = adapted
@@ -19,7 +19,11 @@ def model_nle(data, approximator):
     def nle_logdensity_fun(x):
         sim_data = data.copy()
 
-        sim_data["inference_conditions"] = jnp.log(jnp.tile(x, (1, num_obs, 1)))
+        if fixed is not None:
+            for p in fixed:
+                x = x.at[p[0]].set(p[1])
+
+        sim_data["inference_conditions"] = jnp.tile(x, (1, num_obs, 1))
 
         for key in approximator.CONDITION_KEYS:
             if key in approximator.standardize and key in sim_data:
@@ -35,7 +39,7 @@ def model_nle(data, approximator):
 
         log_prob = approximator._log_prob(**sim_data)
 
-        log_prob = log_prob + log_det_jac # + ldj
+        log_prob = log_prob + ldj
 
         return log_prob.sum()
 
