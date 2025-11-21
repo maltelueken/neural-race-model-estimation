@@ -1,0 +1,38 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - sweeper: basic
+  - approximator: continuous_approximator
+  - optimizer: adam_cosine_decay
+  - simulator: rdmc
+  - callbacks: tensorboard
+  - model: rdmc # Overrides simulator and approximator
+  - inference-method: coupling_flow # Overrides approximator
+
+hydra:
+  run:
+    dir: outputs/${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
+  sweep:
+    dir: multirun
+    subdir: ${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
+  job:
+    chdir: True
+    env_set:
+      KERAS_BACKEND: jax
+    config:
+      override_dirname:
+        item_sep: "/"
+        exclude_keys:
+          - model
+  job_logging:
+    handlers:
+      file:
+        mode: w
+
+seed: 2025
+
+learning_rate: 5e-3
+epochs: 20
+iterations_per_epoch: 500
+batch_size: 64

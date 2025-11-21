@@ -1,0 +1,12 @@
+_target_: keras.optimizers.Adam
+learning_rate:
+  _target_: keras.optimizers.schedules.CosineDecayRestarts
+  initial_learning_rate: ${learning_rate}
+  first_decay_steps:
+    _target_: sweeper.get_decay_steps
+    num_epochs: 1
+    num_batches: ${iterations_per_epoch}
+  alpha: 1e-6
+  t_mul: 2.0
+  m_mul: 1.0
+clipnorm: 1.0

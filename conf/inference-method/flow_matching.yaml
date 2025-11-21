@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+- override /approximator/inference_network: flow_matching
+
+base_distribution: 
+  _target_: bayesflow.distributions.DiagonalStudentT
+  df: 50
+use_optimal_transport: false
+
+mlp_depth: 5
+mlp_width: 8 # 2^8 = 256
+mlp_residual: false
+mlp_dropout: 0.0
+mlp_spectral_normalization: false
+
+hydra:
+  sweeper:
+    params:
+      inference_mlp_depth: range(2, 12)
+      inference_mlp_width: range(6, 10)
+      approximator.inference_network.use_optimal_transport: choice(true, false)
+      

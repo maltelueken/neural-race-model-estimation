@@ -1,0 +1,8 @@
+- _target_: keras.callbacks.ModelCheckpoint
+  filepath: checkpoints/model.keras
+  save_weights_only: false
+  monitor: loss
+  mode: min
+  save_best_only: true
+- _target_: keras.callbacks.CSVLogger
+  filename: history.csv

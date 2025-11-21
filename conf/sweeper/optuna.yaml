@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - override /hydra/sweeper: optuna
+
+hydra:
+  sweeper:
+    direction: [minimize, maximize, minimize]
+    study_name: train_npe-${hydra.runtime.choices.experiment}-${hydra.runtime.choices.model}-${hydra.runtime.choices.inference-method}-${hydra.runtime.choices.summary-method}
+    storage: "sqlite:///multirun/train_npe_trials.db"
+    n_trials: 20
+    n_jobs: 1

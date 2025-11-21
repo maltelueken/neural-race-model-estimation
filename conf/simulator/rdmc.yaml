@@ -1,0 +1,3 @@
+defaults:
+- prior_simulator: rdmc
+- experiment_simulator: rdmc

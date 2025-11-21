@@ -1,0 +1,2 @@
+_target_: rdmc.create_rdmc_adapter
+param_names: ["v_c_intercept", "v_c_slope", "tau", "amp", "s_true", "b", "t0"]

@@ -1,0 +1,20 @@
+_target_: bayesflow.networks.CouplingFlow
+depth: ${depth}
+subnet: mlp
+transform: ${transform}
+permutation: ${permutation}
+use_actnorm: ${use_actnorm}
+base_distribution: ${base_distribution}
+subnet_kwargs:
+  widths:
+    _target_: sweeper.constant_list
+    length: ${mlp_depth}
+    value:
+      _target_: builtins.pow
+      base: 2
+      exp: ${mlp_width}
+  kernel_initializer: glorot_uniform
+  activation: hard_silu
+  dropout: ${mlp_dropout}
+  residual: ${mlp_residual}
+  spectral_normalization: ${mlp_spectral_normalization}
