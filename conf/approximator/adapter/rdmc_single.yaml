@@ -1,0 +1,2 @@
+_target_: rdmc.create_rdmc_adapter_single
+param_names: ["v_c", "tau", "amp", "s", "b", "t0"]

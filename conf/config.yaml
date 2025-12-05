@@ -12,10 +12,10 @@ defaults:
 
 hydra:
   run:
-    dir: outputs/${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
+    dir: outputs/${hydra:runtime.choices.model}/${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
   sweep:
     dir: multirun
-    subdir: ${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
+    subdir: ${hydra:runtime.choices.model}/${hydra:runtime.choices.inference-method}/${hydra.job.override_dirname}
   job:
     chdir: True
     env_set:
@@ -25,6 +25,7 @@ hydra:
         item_sep: "/"
         exclude_keys:
           - model
+          - inference-method
   job_logging:
     handlers:
       file:

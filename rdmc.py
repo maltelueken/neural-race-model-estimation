@@ -75,13 +75,32 @@ def rdmc_experiment_simple(v_c_intercept, v_c_slope, amp, tau, s_true, s_false, 
 
     rt, resp = rdmc_experiment_simple_numba(mu, b, s, float(t0), num_obs, t_max)
 
-    rt /= 1000
+    # rt /= 1000
 
     # timed_out = rt == t_max
     # rt[timed_out] = -1.0
     # resp[timed_out] = -1
 
     return {"x": np.c_[rt, resp]}
+
+
+def rdmc_single_accumulator(v_c, amp, tau, s, b, t0, a_shape, num_obs, t_max):
+    t = np.arange(1, t_max + 1, 1)
+
+    eq4 = (
+        amp
+        * np.exp(-t / tau)
+        * (np.exp(1) * t / (a_shape - 1) / tau) ** (a_shape - 1)
+    ) * ((a_shape - 1) / t - 1 / tau)
+
+    mu = np.tile([v_c], (t_max, 1)).T
+    s = np.array([s])
+
+    mu = mu + eq4
+
+    rt, _ = rdmc_experiment_simple_numba(mu, b, s, float(t0), num_obs, t_max)
+
+    return {"x": rt}
 
 
 def truncated_normal_rvs(
@@ -141,6 +160,38 @@ def rdmc_prior(
     }
 
 
+def rdmc_prior_single(
+    drift_c_loc=0.5,
+    drift_c_scale=0.1,
+    amp_shape=10,
+    amp_scale=2,
+    tau_shape=8,
+    tau_scale=10,
+    sd_shape=80,
+    sd_scale=0.05,
+    threshold_shape=100,
+    threshold_scale=0.7,
+    t0_loc=300,
+    t0_scale=200,
+    rng=np.random.default_rng(2025),
+):
+    drift_c_slope = truncated_normal_rvs(drift_c_loc, drift_c_scale, random_state=rng)
+    amp = rng.gamma(shape=amp_shape, scale=amp_scale)
+    tau = rng.gamma(shape=tau_shape, scale=tau_scale)
+    s = rng.gamma(shape=sd_shape, scale=sd_scale)
+    b = rng.gamma(shape=threshold_shape, scale=threshold_scale)
+    t0 = truncated_normal_rvs(t0_loc, t0_scale, random_state=rng)
+
+    return {
+        "v_c": drift_c_slope,
+        "amp": amp,
+        "tau": tau,
+        "s": s,
+        "b": b,
+        "t0": t0
+    }
+
+
 def random_num_obs(batch_shape, min_obs, max_obs, rng):
     return dict(num_obs=rng.integers(min_obs, max_obs))
 
@@ -188,6 +239,20 @@ def create_rdmc_adapter(param_names):
         .convert_dtype("float64", "float32")
         .broadcast(param_names, to="x", expand=1)
         .drop("num_obs")
+        .as_set(["x"])
+        .log(param_names)
+        .concatenate(param_names, into="inference_conditions")
+        .rename("x", "inference_variables")
+    )
+
+def create_rdmc_adapter_single(param_names):
+    return (
+        bf.Adapter()
+        .to_array()
+        .convert_dtype("float64", "float32")
+        .drop("num_obs")
+        .expand_dims("x", axis=-1)
+        .broadcast(param_names, to="x", expand=(1,))
         .as_set(["x"])
         .log(param_names)
         .concatenate(param_names, into="inference_conditions")
