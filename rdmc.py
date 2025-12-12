@@ -162,17 +162,17 @@ def rdmc_prior(
 
 def rdmc_prior_single(
     drift_c_loc=0.5,
-    drift_c_scale=0.1,
-    amp_shape=10,
-    amp_scale=2,
-    tau_shape=8,
-    tau_scale=10,
-    sd_shape=80,
-    sd_scale=0.05,
-    threshold_shape=100,
-    threshold_scale=0.7,
+    drift_c_scale=1.0,
+    amp_shape=2,
+    amp_scale=10,
+    tau_shape=0.8,
+    tau_scale=100,
+    sd_shape=4,
+    sd_scale=1,
+    threshold_shape=10,
+    threshold_scale=7,
     t0_loc=300,
-    t0_scale=200,
+    t0_scale=500,
     rng=np.random.default_rng(2025),
 ):
     drift_c_slope = truncated_normal_rvs(drift_c_loc, drift_c_scale, random_state=rng)
@@ -248,8 +248,8 @@ def create_rdmc_adapter(param_names):
 def create_rdmc_adapter_single(param_names):
     return (
         bf.Adapter()
-        .to_array()
-        .convert_dtype("float64", "float32")
+        # .to_array()
+        # .convert_dtype("float64", "float32")
         .drop("num_obs")
         .expand_dims("x", axis=-1)
         .broadcast(param_names, to="x", expand=(1,))

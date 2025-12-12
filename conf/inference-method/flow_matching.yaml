@@ -3,9 +3,9 @@
 defaults:
 - override /approximator/inference_network: flow_matching
 
-base_distribution: 
-  _target_: bayesflow.distributions.DiagonalStudentT
-  df: 50
+base_distribution: normal
+  # _target_: bayesflow.distributions.DiagonalStudentT
+  # df: 50
 use_optimal_transport: false
 
 mlp_depth: 5

@@ -7,9 +7,9 @@ depth: 6
 transform: affine
 permutation: random
 use_actnorm: true
-base_distribution: 
-  _target_: bayesflow.distributions.DiagonalStudentT
-  df: 50
+base_distribution: normal
+  # _target_: bayesflow.distributions.DiagonalStudentT
+  # df: 50
 
 mlp_depth: 2
 mlp_width: 7 # 2^7 = 128
