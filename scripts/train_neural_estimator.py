@@ -12,28 +12,15 @@ import numpy as np
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from rdmc import rdmc_prior, rdmc_experiment_simple
+from confrdm.simulators.rdmc import sample_rdmc_prior_single_accumulator, simulate_rdmc_single_accumulator
+from confrdm.utils import sample_random_num_obs
 
 logger = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig):
-
-    prior_args = instantiate(cfg["simulator"]["prior_simulator"])
-    experiment_args = instantiate(cfg["simulator"]["experiment_simulator"])
-
-    def prior_fun():
-        return rdmc_prior(**prior_args)
-
-    def experiment_fun(**kwargs):
-        return rdmc_experiment_simple(**kwargs, **experiment_args)
-
-    def random_num_obs(batch_shape):
-        return dict(num_obs=np.random.default_rng(cfg["seed"]).integers(100, 1000))
-
-    simulator = bf.simulators.make_simulator([prior_fun, experiment_fun], meta_fn=random_num_obs)
-
+    simulator = instantiate(cfg["simulator"], _convert_="partial")
     approximator = instantiate(cfg["approximator"], _convert_="partial")
     optimizer = instantiate(cfg["optimizer"], _convert_="partial")
 
