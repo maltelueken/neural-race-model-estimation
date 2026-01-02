@@ -7,7 +7,7 @@ use_actnorm: ${use_actnorm}
 base_distribution: ${base_distribution}
 subnet_kwargs:
   widths:
-    _target_: sweeper.constant_list
+    _target_: confrdm.utils.constant_list
     length: ${mlp_depth}
     value:
       _target_: builtins.pow

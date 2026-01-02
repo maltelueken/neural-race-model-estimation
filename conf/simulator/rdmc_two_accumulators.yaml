@@ -1,0 +1,3 @@
+defaults:
+- prior_simulator: rdmc_two_accumulators
+- experiment_simulator: rdmc_two_accumulators

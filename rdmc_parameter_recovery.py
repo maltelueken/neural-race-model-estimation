@@ -18,7 +18,7 @@ from blackjax.smc import extend_params
 from data import save_hdf5
 from mcmc import model_nle
 from priors import prior_fun_train, truncated_normal_rvs
-from rdmc import rdmc_experiment_simple
+from confrdm.simulators.rdmc import simulate_rdmc_two_accumulators
 from smc import smc_inference_loop
 
 NUM_TEST_DATASETS = 50
@@ -31,7 +31,7 @@ logger = logging.getLogger()
 
 
 def simulator_fun(**kwargs):
-    return rdmc_experiment_simple(**kwargs, t_max=2000, seed=2025, a_shape=2, s_false=4)
+    return simulate_rdmc_two_accumulators(**kwargs, t_max=2000, seed=2025, a_shape=2, s_false=4)
 
 
 def meta(batch_size):

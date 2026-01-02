@@ -5,9 +5,9 @@ defaults:
   - sweeper: basic
   - approximator: continuous_approximator
   - optimizer: adam_cosine_decay
-  - simulator: rdmc
+  - simulator: rdmc_two_accumulators
   - callbacks: tensorboard
-  - model: rdmc # Overrides simulator and approximator
+  - model: rdmc_two_accumulators # Overrides simulator and approximator
   - inference-method: coupling_flow # Overrides approximator
 
 hydra:

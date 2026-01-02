@@ -1,0 +1,3 @@
+defaults:
+- prior_simulator: rdmc_single_accumulator
+- experiment_simulator: rdmc_single_accumulator

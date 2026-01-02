@@ -3,7 +3,7 @@ subnet: mlp
 subnet_kwargs:
   _target_: builtins.dict
   widths:
-    _target_: sweeper.constant_list
+    _target_: confrdm.utils.constant_list
     length: ${mlp_depth}
     value:
       _target_: builtins.pow

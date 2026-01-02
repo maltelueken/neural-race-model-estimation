@@ -1,2 +1,2 @@
-_target_: rdmc.create_rdmc_adapter
+_target_: confrdm.simulators.rdmc.create_nle_adapter_two_accumulators
 param_names: ["v_c_intercept", "v_c_slope", "tau", "amp", "s_true", "b", "t0"]
