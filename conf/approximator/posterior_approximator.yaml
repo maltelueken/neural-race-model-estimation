@@ -1,0 +1,7 @@
+defaults:
+- adapter: rdmc_npe_two_accumulators
+- inference_network: flow_matching
+- summary_network: set_transformer
+
+_target_: bayesflow.approximators.ContinuousApproximator
+standardize: all

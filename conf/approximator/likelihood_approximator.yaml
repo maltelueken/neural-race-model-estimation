@@ -1,5 +1,5 @@
 defaults:
-- adapter: rdmc
+- adapter: rdmc_nle_two_accumulators
 - inference_network: coupling_flow
 
 _target_: bayesflow.approximators.ContinuousApproximator

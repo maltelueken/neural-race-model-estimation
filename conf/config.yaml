@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - sweeper: basic
-  - approximator: continuous_approximator
+  - approximator: likelihood_approximator
   - optimizer: adam_cosine_decay
   - simulator: rdmc_two_accumulators
   - callbacks: tensorboard

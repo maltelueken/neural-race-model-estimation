@@ -1,0 +1,14 @@
+_target_: bayesflow.networks.SetTransformer
+summary_dim: 16
+embed_dims: [64, 64]
+num_heads: [4, 4]
+mlp_depths: [2, 2]
+mlp_widths: [128, 128]
+num_seeds: 1
+dropout: 0.00
+mlp_activation: gelu
+kernel_initializer: lecun_normal
+use_bias: true
+layer_norm: true
+num_inducing_points: null
+seed_dim: null
