@@ -1,2 +1,2 @@
-_target_: confrdm.simulators.rdmc.create_nle_adapter_single_accumulator
+_target_: confrdm.adapters.create_nle_adapter_single_accumulator
 param_names: ["v_c", "tau", "amp", "s", "b", "t0"]
