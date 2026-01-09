@@ -35,3 +35,15 @@ def truncated_normal_rvs(
         loc=loc,
         scale=scale,
     )
+
+
+def scaled_gamma_density(t, amp, tau, a_shape):
+    return (
+        amp
+        * np.exp(-t / tau)
+        * (np.exp(1) * t / (a_shape - 1) / tau) ** (a_shape - 1)
+    ) 
+
+
+def scaled_gamma_density_derivative(t, amp, tau, a_shape):
+    return scaled_gamma_density(t, amp, tau, a_shape) * ((a_shape - 1) / t - 1 / tau)
