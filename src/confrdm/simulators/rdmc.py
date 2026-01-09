@@ -1,11 +1,9 @@
 """Racing diffusion model for conflict tasks.
 """
 
-import bayesflow as bf
 import numpy as np
 
 from numba import njit, prange
-from scipy import stats
 
 from confrdm.utils import truncated_normal_rvs, scaled_gamma_density_derivative
 
@@ -85,12 +83,14 @@ def simulate_rdmc_two_accumulators(v_c_intercept, v_c_slope, amp, tau, s_true, s
 def simulate_rdmc_single_accumulator(v_c, amp, tau, s, b, t0, a_shape, num_obs, t_max):
     t = np.arange(1, t_max + 1, 1)
 
+    v_c, amp, tau, s, b, t0, a_shape = transform_rdmc_params(v_c, amp, tau, s, b, t0, a_shape)
+
     v_a = scaled_gamma_density_derivative(t, amp, tau, a_shape)
 
     mu = np.tile([v_c], (t_max, 1)).T
-    s = np.array([s])
+    s = np.array([s])[0]
 
-    mu = mu + v_a
+    mu[0, :] + v_a
 
     rt, _ = simulate_rdmc_numba(mu, b, s, float(t0), num_obs, t_max)
 
@@ -98,27 +98,27 @@ def simulate_rdmc_single_accumulator(v_c, amp, tau, s, b, t0, a_shape, num_obs, 
 
 
 def sample_rdmc_prior_two_accumulators(
-    drift_c_intercept_loc=0.5,
+    drift_c_intercept_loc=1.0,
     drift_c_intercept_scale=0.5,
-    drift_c_slope_loc=3,
+    drift_c_slope_loc=4.0,
     drift_c_slope_scale=0.5,
-    amp_loc=0.15,
+    amp_loc=0.1,
     amp_scale=0.05,
-    tau_loc=0.15,
+    tau_loc=0.1,
     tau_scale=0.05,
-    sd_true_shape=12.0,
+    sd_true_loc=0.9,
     sd_true_scale=0.1,
     threshold_shape=8.0,
-    threshold_scale=0.15,
+    threshold_scale=0.1,
     t0_loc=0.3,
-    t0_scale=0.2,
+    t0_scale=0.05,
     rng=np.random.default_rng(2025),
 ):
     drift_c_intercept = truncated_normal_rvs(drift_c_intercept_loc, drift_c_intercept_scale, random_state=rng)
     drift_c_slope = truncated_normal_rvs(drift_c_slope_loc, drift_c_slope_scale, random_state=rng)
     amp = truncated_normal_rvs(amp_loc, amp_scale, random_state=rng)
     tau = truncated_normal_rvs(tau_loc, tau_scale, random_state=rng)
-    s_true = rng.gamma(shape=sd_true_shape, scale=sd_true_scale)
+    s_true = truncated_normal_rvs(sd_true_loc, sd_true_scale, random_state=rng)
     b = rng.gamma(shape=threshold_shape, scale=threshold_scale)
     t0 = truncated_normal_rvs(t0_loc, t0_scale, random_state=rng)
 
@@ -134,24 +134,24 @@ def sample_rdmc_prior_two_accumulators(
 
 
 def sample_rdmc_prior_single_accumulator(
-    drift_c_loc=0.5,
-    drift_c_scale=1.0,
-    amp_shape=2,
-    amp_scale=10,
-    tau_shape=0.8,
-    tau_scale=100,
-    sd_shape=4,
-    sd_scale=1,
-    threshold_shape=10,
-    threshold_scale=7,
-    t0_loc=300,
-    t0_scale=500,
+    drift_c_loc=4.0,
+    drift_c_scale=0.5,
+    amp_loc=0.1,
+    amp_scale=0.05,
+    tau_loc=0.1,
+    tau_scale=0.05,
+    sd_loc=0.9,
+    sd_scale=0.1,
+    threshold_shape=8.0,
+    threshold_scale=0.1,
+    t0_loc=0.3,
+    t0_scale=0.05,
     rng=np.random.default_rng(2025),
 ):
     drift_c_slope = truncated_normal_rvs(drift_c_loc, drift_c_scale, random_state=rng)
-    amp = rng.gamma(shape=amp_shape, scale=amp_scale)
-    tau = rng.gamma(shape=tau_shape, scale=tau_scale)
-    s = rng.gamma(shape=sd_shape, scale=sd_scale)
+    amp = truncated_normal_rvs(amp_loc, amp_scale, random_state=rng)
+    tau = truncated_normal_rvs(tau_loc, tau_scale, random_state=rng)
+    s = truncated_normal_rvs(sd_loc, sd_scale, random_state=rng)
     b = rng.gamma(shape=threshold_shape, scale=threshold_scale)
     t0 = truncated_normal_rvs(t0_loc, t0_scale, random_state=rng)
 

@@ -59,16 +59,16 @@ def simulate_dmc(v_c, amp, tau, b, t0, alpha, a_shape, s, num_obs, t_max):
 
 
 def sample_dmc_prior(
-    drift_loc=3,
+    drift_loc=3.0,
     drift_scale=0.5,
-    amp_loc=0.15,
+    amp_loc=0.1,
     amp_scale=0.05,
-    tau_loc=0.15,
+    tau_loc=0.1,
     tau_scale=0.05,
-    threshold_shape=5.0,
-    threshold_scale=0.1,
+    threshold_shape=10.0,
+    threshold_scale=0.05,
     t0_loc=0.3,
-    t0_scale=0.2,
+    t0_scale=0.05,
     rng=np.random.default_rng(2025),
 ):
     drift = truncated_normal_rvs(drift_loc, drift_scale, random_state=rng)
