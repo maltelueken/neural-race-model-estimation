@@ -85,12 +85,12 @@ def simulate_rdmc_two_accumulators(v_c_intercept, v_c_slope, amp, tau, s_true, s
 def simulate_rdmc_single_accumulator(v_c, amp, tau, s, b, t0, a_shape, num_obs, t_max):
     t = np.arange(1, t_max + 1, 1)
 
-    gamma_drift = amp * stats.gamma.pdf(t, a=a_shape, scale=tau)
+    v_a = scaled_gamma_density_derivative(t, amp, tau, a_shape)
 
     mu = np.tile([v_c], (t_max, 1)).T
     s = np.array([s])
 
-    mu = mu + gamma_drift
+    mu = mu + v_a
 
     rt, _ = simulate_rdmc_numba(mu, b, s, float(t0), num_obs, t_max)
 
