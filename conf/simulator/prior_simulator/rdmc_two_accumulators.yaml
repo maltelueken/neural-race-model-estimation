@@ -2,20 +2,20 @@ _target_: bayesflow.simulators.LambdaSimulator
 sample_fn:
   _target_: confrdm.simulators.rdmc.sample_rdmc_prior_two_accumulators
   _partial_: true
-  drift_c_intercept_loc: 0.05
-  drift_c_intercept_scale: 0.05
-  drift_c_slope_loc: 0.5
-  drift_c_slope_scale: 0.1
-  amp_shape: 10
-  amp_scale: 2
-  tau_shape: 8
-  tau_scale: 10
-  sd_true_shape: 80
-  sd_true_scale: 0.05
-  threshold_shape: 100
-  threshold_scale: 0.7
-  t0_loc: 300
-  t0_scale: 200
+  drift_c_intercept_loc: 1.0
+  drift_c_intercept_scale: 0.5
+  drift_c_slope_loc: 4.0
+  drift_c_slope_scale: 0.5
+  amp_loc: 0.1
+  amp_scale: 0.05
+  tau_loc: 0.1
+  tau_scale: 0.05
+  sd_true_loc: 0.9
+  sd_true_scale: 0.1
+  threshold_shape: 8.0
+  threshold_scale: 0.1
+  t0_loc: 0.3
+  t0_scale: 0.05
   rng:
     _target_: numpy.random.default_rng
     seed: ${seed}
