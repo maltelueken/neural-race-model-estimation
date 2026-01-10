@@ -102,7 +102,7 @@ def sample_rdmc_prior_two_accumulators(
     drift_c_intercept_scale=0.5,
     drift_c_slope_loc=4.0,
     drift_c_slope_scale=0.5,
-    amp_loc=0.1,
+    amp_loc=0.2,
     amp_scale=0.05,
     tau_loc=0.1,
     tau_scale=0.05,
@@ -136,7 +136,7 @@ def sample_rdmc_prior_two_accumulators(
 def sample_rdmc_prior_single_accumulator(
     drift_c_loc=4.0,
     drift_c_scale=0.5,
-    amp_loc=0.1,
+    amp_loc=0.2,
     amp_scale=0.05,
     tau_loc=0.1,
     tau_scale=0.05,
