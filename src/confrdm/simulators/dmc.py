@@ -11,8 +11,12 @@ from confrdm.utils import truncated_normal_rvs, scaled_gamma_density_derivative
 def simulate_dmc_numba(mu, b, s, t0, alpha, num_obs, t_max):
     fpt = np.full((num_obs,), fill_value=t_max, dtype=np.float64)
     resp = np.full((num_obs,), fill_value=-1.0, dtype=np.int32)
-    start = np.random.beta(alpha, alpha, size=(num_obs,))
-    start = -b + start * 2 * b
+    
+    if alpha == 0.0:
+        start = np.zeros((num_obs,))
+    else:
+        start = np.random.beta(alpha, alpha, size=(num_obs,))
+        start = -b + start * 2 * b
 
     for n in prange(num_obs):
         xt = start[n]
