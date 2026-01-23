@@ -1,0 +1,7 @@
+
+num_bins: 4
+num_mid: 64
+num_params: 5
+
+dt: 0.004
+t_max: 4.0

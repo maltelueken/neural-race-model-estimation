@@ -2,44 +2,54 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from confrdm_jax.simulators import create_crdm_single_prior_informed
+from confrdm_jax.simulators import create_wald_prior_informed
+from confrdm_jax.simulators import sample_conditional_crdm_single
+from confrdm_jax.simulators import sample_conditional_wald
+from confrdm_jax.simulators import simulate_crdm_batch
+from confrdm_jax.simulators import simulate_crdm_dataset
+from confrdm_jax.simulators import simulate_crdm_single_batch
+from confrdm_jax.simulators import simulate_crdm_single_dataset
+from confrdm_jax.simulators import simulate_crdm_single_trial
 
-from confrdm.rdmc import rdmc_experiment_simple_jax, rdmc_experiment_simple_batched, RDMCSimulator, rdmc_single_trial
 
-
-@pytest.mark.parametrize("t_max", (50, 500, 5000))
-def test_rdmc_single_trial(t_max):
-    mu = jnp.tile(jnp.array([0.5, 0.5]), (t_max, 1)).T
-    sigma = jnp.array([1.0, 1.0])
-    b = 70
-    t0 = 300
+@pytest.mark.parametrize(("dt", "t_max"), ((0.001, 0.5), (0.01, 5.0), (0.1, 2.0)))
+def test_simulate_crdm_single_trial(dt, t_max):
+    t = jnp.expand_dims(jnp.arange(dt, t_max, dt), 0)
+    mu = jnp.expand_dims(jnp.array([1.0, 4.0]), 1) * t
+    sigma = jnp.expand_dims(jnp.array([1.0, 1.0]), 1)
+    b = 1.0
+    t0 = 0.3
 
     key = jax.random.key(123)
 
-    rt, resp = rdmc_single_trial(mu, b, sigma, t0, key)
+    rt, resp = simulate_crdm_single_trial(mu, b, sigma, t0, dt, key)
 
     assert jnp.all(jnp.bitwise_or(rt == -1, jnp.bitwise_and(rt > t0, rt <= t_max + t0)))
     assert jnp.all(jnp.bitwise_or(rt == -1, jnp.bitwise_or(resp == 0, resp == 1)))
 
 
-def test_rdmc_experiment_simple_jax():
-    v_c_intercept=0.05
-    v_c_slope=0.5
-    amp=20.0
-    tau=80.0
-    s_true=4.0
-    s_false=4.0
-    b=70.0
-    t0=300.0
-    a_shape=2.0
+def test_simulate_crdm_dataset():
+    v_c_intercept = 1.0
+    v_c_slope = 4.0
+    amp = 0.3
+    tau = 0.15
+    s_true = 1.0
+    b = 1.0
+    t0 = 0.3
     num_obs = 100
-    t_max = 500
+    dt = 0.001
+    t_max = 5.0
 
     key = jax.random.key(123)
     keys = jax.random.split(key, num_obs)
 
-    rt, resp = rdmc_experiment_simple_jax(
-        keys, v_c_intercept, v_c_slope, amp, tau, s_true, s_false, b, t0, a_shape, t_max
+    data = simulate_crdm_dataset(
+        keys, v_c_intercept, v_c_slope, amp, tau, s_true, b, t0, dt, t_max,
     )
+
+    rt = data[:, 0]
+    resp = data[:, 1]
 
     assert rt.shape[0] == num_obs
     assert resp.shape[0] == num_obs
@@ -48,26 +58,28 @@ def test_rdmc_experiment_simple_jax():
     assert jnp.mean(resp) < 1.0
 
 
-def test_rdmc_experiment_simple_batched():
-    v_c_intercept = jnp.array([0.05, 0.05])
-    v_c_slope = jnp.array([0.5, 0.5])
-    amp = jnp.array([20.0, 20.0])
-    tau = jnp.array([80.0, 80.0])
-    s_true = jnp.array([4.0, 4.0])
-    s_false = jnp.array([4.0, 4.0])
-    b = jnp.array([70.0, 70.0,])
-    t0 = jnp.array([300.0, 300.0])
-    a_shape = jnp.array([2.0, 2.0])
-    t_max = 500
+def test_simulate_crdm_batch():
+    v_c_intercept = jnp.array([1.0, 1.0])
+    v_c_slope = jnp.array([4.0, 4.0])
+    amp = jnp.array([0.3, 0.3])
+    tau = jnp.array([0.15, 0.15])
+    s_true = jnp.array([1.0, 1.0])
+    b = jnp.array([1.0, 1.0])
+    t0 = jnp.array([0.3, 0.3])
+    dt = 0.001
+    t_max = 5.0
     num_obs = 100
     batch_size = 2
 
     key = jax.random.key(123)
     keys = jax.random.split(key, (batch_size, num_obs))
 
-    rt, resp = rdmc_experiment_simple_batched(
-        keys, v_c_intercept, v_c_slope, amp, tau, s_true, s_false, b, t0, a_shape, t_max
+    data = simulate_crdm_batch(
+        keys, v_c_intercept, v_c_slope, amp, tau, s_true, b, t0, dt, t_max,
     )
+
+    rt = data[..., 0]
+    resp = data[..., 1]
 
     assert rt.shape == (batch_size, num_obs)
     assert resp.shape == (batch_size, num_obs)
@@ -79,47 +91,99 @@ def test_rdmc_experiment_simple_batched():
     assert jnp.all(jnp.isfinite(jnp.var(resp, axis=1)))
 
     # Check that reproducibility works
-    rt_new, resp_new = rdmc_experiment_simple_batched(
-        keys, v_c_intercept, v_c_slope, amp, tau, s_true, s_false, b, t0, a_shape, t_max
+    data_new = simulate_crdm_batch(
+        keys, v_c_intercept, v_c_slope, amp, tau, s_true, b, t0, dt, t_max,
     )
+
+    rt_new = data_new[..., 0]
+    resp_new = data_new[..., 1]
+
     assert jnp.all(rt == rt_new)
     assert jnp.all(resp == resp_new)
 
 
-class TestRDMCSimulator:
-    batch_size = 10
+def test_simulate_crdm_single_dataset():
+    v_c = 4.0
+    amp = 0.3
+    tau = 0.15
+    s = 1.0
+    b = 1.0
+    t0 = 0.3
+    num_obs = 100
+    dt = 0.001
+    t_max = 5.0
 
-    @pytest.fixture
-    def simulator(self, start_seed=2025):
-        def num_obs_fun(batch_shape, key):
-            return jax.random.randint(key, (), 100, 1000)
-        
-        return RDMCSimulator(num_obs_fun=num_obs_fun, start_seed=start_seed)
+    key = jax.random.key(123)
+    keys = jax.random.split(key, num_obs)
 
-    def test_rdmc_simulator(self, simulator):
-        data = simulator.sample((self.batch_size,))
-        
-        num_obs = data.pop("num_obs")
+    rt = simulate_crdm_single_dataset(keys, v_c, amp, tau, s, b, t0, dt, t_max)
 
-        assert num_obs.shape == ()
+    assert rt.shape[0] == num_obs
+    assert jnp.all(rt > t0)
 
-        for val in data.values():
-            assert val.shape[0] == self.batch_size
 
-        # Check that repeated sampling gives different results
-        data_new = simulator.sample((self.batch_size,))
+def test_simulate_crdm_single_batch():
+    v_c = jnp.array([4.0, 4.0])
+    amp = jnp.array([0.3, 0.3])
+    tau = jnp.array([0.15, 0.15])
+    s = jnp.array([1.0, 1.0])
+    b = jnp.array([1.0, 1.0])
+    t0 = jnp.array([0.3, 0.3])
+    dt = 0.001
+    t_max = 5.0
+    num_obs = 100
+    batch_size = 2
 
-        assert num_obs != data_new["num_obs"]
-        assert jnp.all(jnp.mean(data["x"], axis=1) != jnp.mean(data_new["x"], axis=1))
+    key = jax.random.key(123)
+    keys = jax.random.split(key, (batch_size, num_obs))
 
-    def test_rdmc_simulator_kwargs(self, simulator):
-        key = jax.random.key(2025)
-        num_obs = 100
-        data = simulator.sample((self.batch_size,), key=key, num_obs=num_obs)
+    rt = simulate_crdm_single_batch(
+        keys, v_c, amp, tau, s, b, t0, dt, t_max,
+    )
 
-        assert data["num_obs"] == num_obs
+    assert rt.shape == (batch_size, num_obs)
+    # Make sure that RT is above t0
+    assert jnp.all(rt > t0[..., None])
+    # Check that RT and responses are not the same (i.e., random number generation works)
+    assert jnp.all(jnp.isfinite(jnp.var(rt, axis=1)))
 
-        a_shape = 10
-        data_new = simulator.sample((self.batch_size,), key=key, num_obs=num_obs, a_shape=a_shape)
-        # Only compare mean RT because noise is identical leading to identical responses
-        assert jnp.all(jnp.mean(data["x"][..., 0]) != jnp.mean(data_new["x"][..., 0]))
+    # Check that reproducibility works
+    rt_new = simulate_crdm_single_batch(
+        keys, v_c, amp, tau, s, b, t0, dt, t_max,
+    )
+
+    assert jnp.all(rt == rt_new)
+
+
+@pytest.fixture
+def prior_wald():
+    return create_wald_prior_informed()
+
+
+def test_sample_conditional_wald(prior_wald):
+    key = jax.random.key(123)
+    batch_shape = (10, 20)
+    data, context = sample_conditional_wald(key, batch_shape, prior_wald)
+
+    assert data.shape == batch_shape + (1,)
+    assert context.shape == (batch_shape[0], 1, 3)
+    assert jnp.all(jnp.isfinite(data))
+    assert jnp.all(jnp.isfinite(context))
+
+
+@pytest.fixture
+def prior_crdm_single():
+    return create_crdm_single_prior_informed()
+
+
+def test_sample_conditional_crdm_single(prior_crdm_single):
+    key = jax.random.key(123)
+    batch_shape = (10, 20)
+    dt = 0.001
+    t_max = 5.0
+    data, context = sample_conditional_crdm_single(key, batch_shape, prior_crdm_single, dt, t_max)
+
+    assert data.shape == batch_shape + (1,)
+    assert context.shape == (batch_shape[0], 1, 5)
+    assert jnp.all(jnp.isfinite(data))
+    assert jnp.all(jnp.isfinite(context))
