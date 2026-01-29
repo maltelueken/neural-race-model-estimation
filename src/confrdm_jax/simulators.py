@@ -121,12 +121,12 @@ def create_crdm_single_prior_informed(
     v_c_loc: float = 4.0,
     v_c_scale: float = 0.5,
     amp_loc: float = 0.3,
-    amp_scale: float = 0.1,
+    amp_scale: float = 0.05,
     tau_loc: float = 0.1,
-    tau_scale: float = 0.1,
-    s_loc: float = 0.9,
+    tau_scale: float = 0.05,
+    s_loc: float = 0.8,
     s_scale: float = 0.25,
-    b_loc: float = 0.5,
+    b_loc: float = 0.7,
     b_scale: float = 0.25,
 ) -> distrax.Joint:
     return distrax.Joint([
