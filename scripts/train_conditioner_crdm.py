@@ -9,7 +9,7 @@ from tqdm import tqdm
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.flows import save_conditioner
 from confrdm_jax.flows import train_step
-from confrdm_jax.simulators import create_crdm_single_prior_informed
+from confrdm_jax.simulators import create_crdm_single_prior_uniform
 from confrdm_jax.simulators import sample_conditional_crdm_single
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
-    prior = create_crdm_single_prior_informed()
+    prior = create_crdm_single_prior_uniform()
 
     train_steps = cfg["train_steps"]
 
