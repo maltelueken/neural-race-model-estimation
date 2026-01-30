@@ -1,11 +1,16 @@
 # @package _global_
 
 defaults:
+ - _self_
  - model: rdm
+ - sweeper: basic
 
 hydra:
   run:
     dir: outputs/${hydra:runtime.choices.model}/${hydra.job.override_dirname}
+  sweep:
+    dir: multirun
+    subdir: ${hydra:runtime.choices.model}/${hydra.job.override_dirname}
   job:
     chdir: True
     config:
@@ -22,13 +27,18 @@ hydra:
 
 train_steps: 50000
 train_batch_size: 64
-train_num_obs: 200
+train_num_obs: 500
 train_seed: 2026
+
+save: true
+
+test_seed: 3500
+test_num_obs: 500
+test_num_datasets: 2
 
 learning_rate: 5e-3
 
 mcmc:
-  num_warmup: 1000
+  num_warmup: 2000
   num_sampling: 1000
-
-
+  num_chains: 4

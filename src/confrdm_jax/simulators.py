@@ -50,6 +50,13 @@ class TruncatedNormal(distrax.Distribution):
         return jax.lax.broadcast_shapes(
             self._loc.shape, self._scale.shape, self._lower.shape, self._upper.shape
         )
+    
+    def mode(self) -> jnp.ndarray:
+        if self._loc < self._lower:
+            return self._lower
+        elif self._loc > self._upper:
+            return self._upper
+        return self._loc
 
 
 def create_wald_prior_uniform(
@@ -107,6 +114,27 @@ def sample_conditional_wald(
     return jnp.expand_dims(jnp.moveaxis(data, 0, -1), -1), context
 
 
+def create_rdm_prior_informed(
+    v_intercept_loc: float = 1.0,
+    v_intercept_scale: float = 0.5,
+    v_scale_loc: float = 4.0,
+    v_scale_scale: float = 0.5,
+    s_true_shape: float = 12.0,
+    s_true_scale: float = 0.1,
+    b_shape: float = 8.0,
+    b_scale: float = 0.15,
+    t0_loc: float = 0.3,
+    t0_scale: float = 0.2,
+) -> distrax.Joint:
+    return distrax.Joint([
+        TruncatedNormal(v_intercept_loc, v_intercept_scale, 0.0, jnp.inf),
+        TruncatedNormal(v_scale_loc, v_scale_scale, 0.0, jnp.inf),
+        distrax.Gamma(s_true_shape, 1.0 / s_true_scale),
+        distrax.Gamma(b_shape, 1.0 / b_scale),
+        TruncatedNormal(t0_loc, t0_scale, 0.0, jnp.inf),
+    ])
+
+
 def simulate_rdm(
     v_intercept: jnp.ndarray,
     v_slope: jnp.ndarray,
@@ -116,20 +144,49 @@ def simulate_rdm(
     batch_shape: Tuple[int, ...],
     key: jnp.ndarray,
 ) -> jnp.ndarray:
-    v = jnp.hstack([v_intercept, v_intercept + v_slope])
-    s = jnp.hstack([1.0, s_true])
+
+    v = jnp.stack([v_intercept, v_intercept + v_slope], axis=0)
+    s = jnp.stack([jnp.ones_like(s_true), s_true], axis=0)
 
     mu = b / v
     lam = (b / s) ** 2
 
     fpt = distributions.InverseGaussian(mu, lam).sample(batch_shape, key)
 
-    print(fpt.shape)
+    resp = jnp.argmin(fpt, axis=1)
+    rt = jnp.min(fpt, axis=1) + t0
+    rt = jnp.transpose(rt)
+    resp = jnp.transpose(resp)
 
-    resp = jnp.argmin(fpt, axis=-1)
-    rt = jnp.min(fpt, axis=-1) + t0
+    return jnp.stack([rt, resp], axis=-1)
 
-    return jnp.c_[rt, resp]
+
+@partial(jax.jit, static_argnames=("batch_shape", "prior"))
+def sample_conditional_rdm(
+    key: jnp.ndarray,
+    batch_shape: Tuple[int, ...],
+    prior: distrax.Joint,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    key_context, key_data = jax.random.split(key, 2)
+
+    prior_shape = batch_shape[:-1]
+
+    context = prior.sample(seed=key_context, sample_shape=prior_shape)
+
+    data = simulate_rdm(
+        context[0],
+        context[1],
+        context[2],
+        context[3],
+        context[4],
+        batch_shape[-1],
+        key_data,
+    )
+
+    context = jnp.expand_dims(jnp.array(context), axis=-1)
+    context = jnp.moveaxis(jnp.array(context), 0, -1)
+
+    return data, context
 
 
 def create_crdm_single_prior_uniform(
@@ -137,7 +194,7 @@ def create_crdm_single_prior_uniform(
     v_c_max: float = 8.0,
     amp_min: float = 0.0,
     amp_max: float = 0.5,
-    tau_min: float = 0.01,
+    tau_min: float = 0.005,
     tau_max: float = 0.4,
     s_min: float = 0.5,
     s_max: float = 2.0,
@@ -345,7 +402,7 @@ def sample_conditional_crdm_single(
     dt: float,
     t_max: float,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    key_context, key_data = jax.random.split(key, 2)
+    key_context, key_data, key_jitter = jax.random.split(key, 3)
 
     prior_shape = batch_shape[:-1]
 
@@ -364,6 +421,10 @@ def sample_conditional_crdm_single(
         dt,
         t_max,
     )
+
+    dt_half = dt / 2.0
+
+    x = x + jax.random.uniform(key_jitter, x.shape, minval=-dt_half, maxval=dt_half)
 
     context = jnp.expand_dims(jnp.array(context), axis=-1)
     context = jnp.moveaxis(jnp.array(context), 0, -1)

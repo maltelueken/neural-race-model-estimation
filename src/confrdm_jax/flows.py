@@ -26,8 +26,8 @@ def spline_flow(data, context, conditioner):
 
     spline_layer = distrax.RationalQuadraticSpline(
         spline_params,
-        range_min=-5.,  # This needs to be high to capture low RTs - otherwise t0 is biased
-        range_max=5.,
+        range_min=-5.0,  # This needs to be low to capture low RTs - otherwise t0 is biased
+        range_max=5.0,
         boundary_slopes="identity",
         min_bin_size=1e-4,
     )
@@ -48,11 +48,6 @@ def spline_flow(data, context, conditioner):
     flow = distrax.Transformed(base_dist, bijector)
 
     return flow.log_prob(data), flow
-
-
-def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):
-  log_probs, _ = spline_flow(data.squeeze(), context, conditioner)
-  return -jnp.mean(jnp.where(jnp.isfinite(log_probs), log_probs, jnp.log(min_log_prob)))
 
 
 def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):

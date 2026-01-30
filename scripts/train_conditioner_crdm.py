@@ -65,9 +65,10 @@ def main(cfg):
 
             logger.info("Loss: %s", value)
 
-    print(conditioner.linear1.bias)
+    if cfg["save"]:
+        save_conditioner(conditioner, Path("conditioner").absolute())
 
-    save_conditioner(conditioner, Path("conditioner").absolute())
+    return metrics.compute()["loss"]
 
 if __name__ == "__main__":
     main()
