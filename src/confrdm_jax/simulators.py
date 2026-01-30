@@ -321,7 +321,7 @@ def sample_conditional_crdm_single(
         keys,
         context[0],
         context[1],
-        context[3],
+        context[2],
         context[3],
         context[4],
         jnp.zeros_like(context[0]),
