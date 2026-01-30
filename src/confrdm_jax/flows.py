@@ -26,10 +26,10 @@ def spline_flow(data, context, conditioner):
 
     spline_layer = distrax.RationalQuadraticSpline(
         spline_params,
-        range_min=-3.,
-        range_max=3.,
+        range_min=-5.,  # This needs to be high to capture low RTs - otherwise t0 is biased
+        range_max=5.,
         boundary_slopes="identity",
-        min_bin_size=1e-3,
+        min_bin_size=1e-4,
     )
 
     exp_layer = distrax.Lambda(
@@ -50,17 +50,17 @@ def spline_flow(data, context, conditioner):
     return flow.log_prob(data), flow
 
 
-def loss_fn(conditioner, data, context, min_log_prob: float = 1e-8):
+def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):
   log_probs, _ = spline_flow(data.squeeze(), context, conditioner)
   return -jnp.mean(jnp.where(jnp.isfinite(log_probs), log_probs, jnp.log(min_log_prob)))
 
 
-def loss_fn(conditioner, data, context, min_log_prob: float = 1e-8):
+def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):
   # 1. Identify invalid data (simulated data that causes NaNs).
   #    Since your flow includes a Log (Inverse Exp), data <= 0 is invalid.
   #    We also check for Infs or existing NaNs.
   data_flat = data.squeeze()
-  is_valid = jnp.isfinite(data_flat) & (data_flat > 1e-6)
+  is_valid = jnp.isfinite(data_flat) & (data_flat > 0.0)
 
   # 2. Create "Safe Data".
   #    Replace invalid data with a dummy safe value (e.g., 1.0) BEFORE the flow.
