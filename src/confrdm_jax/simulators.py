@@ -337,7 +337,7 @@ def simulate_crdm_single_batch(
 
     return rt
 
-
+@partial(jax.jit, static_argnames=("batch_shape", "prior", "dt", "t_max"))
 def sample_conditional_crdm_single(
     key: jnp.ndarray,
     batch_shape: Tuple[int, ...],
