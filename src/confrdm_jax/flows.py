@@ -120,10 +120,21 @@ def load_conditioner(conditioner, path, step=0):
     abstract_model = nnx.eval_shape(lambda: conditioner)
     graphdef, abstract_state = nnx.split(abstract_model)
 
+    sharding = jax.sharding.NamedSharding(
+        jax.sharding.Mesh(jax.devices(), ('x',)),
+        jax.sharding.PartitionSpec(),
+    )
+    def set_sharding(x: jax.ShapeDtypeStruct) -> jax.ShapeDtypeStruct:
+      return x.update(sharding=sharding)
+
+    change_sharding_abstract_state = jax.tree_util.tree_map(
+        set_sharding, abstract_state
+    )
+
     options = ocp.CheckpointManagerOptions()
     with ocp.CheckpointManager(path, options=options) as mngr:
         # 2. Restore the state. StandardRestore uses abstract_state as the schema.
-        state_restored = mngr.restore(step, args=ocp.args.StandardRestore(abstract_state))
+        state_restored = mngr.restore(step, args=ocp.args.StandardRestore(change_sharding_abstract_state))
         mngr.wait_until_finished()
 
     # 3. CRITICAL: Update the existing instance in-place.
