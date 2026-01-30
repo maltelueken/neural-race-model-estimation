@@ -60,7 +60,7 @@ class TruncatedNormal(distrax.Distribution):
 
 
 def create_wald_prior_uniform(
-    v_min: float = 0.05,
+    v_min: float = 0.0,
     v_max: float = 10.0,
     s_min: float = 0.5,
     s_max: float = 3.0,
@@ -190,7 +190,7 @@ def sample_conditional_rdm(
 
 
 def create_crdm_single_prior_uniform(
-    v_c_min: float = 0.05,
+    v_c_min: float = 0.0,
     v_c_max: float = 8.0,
     amp_min: float = 0.0,
     amp_max: float = 0.5,
