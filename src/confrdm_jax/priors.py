@@ -17,3 +17,16 @@ def rdm_prior(x):
     t0 = scale_logtruncnorm(x[4], 0.3, 0.2, 0.0)
 
     return v_intercept + v_slope + s_true + b + t0
+
+@jax.jit
+def crdm_prior(x):
+    x = jnp.exp(x)
+    v_intercept = scale_logtruncnorm(x[0], 1.0, 0.5, 0.0)
+    v_slope = scale_logtruncnorm(x[1], 4.0, 0.5, 0.0)
+    amp = scale_logtruncnorm(x[2], 0.3, 0.05, 0.0)
+    tau = scale_logtruncnorm(x[3], 0.1, 0.05, 0.0)
+    s_true = stats.gamma.logpdf(x[2], a=12.0, scale=0.1)
+    b = stats.gamma.logpdf(x[5], a=4.0, scale=0.15)
+    t0 = scale_logtruncnorm(x[6], 0.3, 0.2, 0.0)
+
+    return v_intercept + v_slope + amp + tau + s_true + b + t0

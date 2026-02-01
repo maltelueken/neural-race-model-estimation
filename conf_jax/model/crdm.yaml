@@ -5,3 +5,5 @@ num_params: 5
 
 dt: 0.004
 t_max: 4.0
+
+test_dt: 0.001
