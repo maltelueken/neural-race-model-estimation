@@ -43,8 +43,8 @@ def create_rdm_two_accumulators_likelihood(data):
     choice = data[:, 1]
 
     @jax.jit
-    def likelihood_fun(x):
-
+    def likelihood_fun(x, min_ll=1e-12):
+        x = jnp.exp(x)
         v_c_true = x[0] + x[1]
         v_c_false = x[0]
         s_true = x[2]
@@ -60,6 +60,6 @@ def create_rdm_two_accumulators_likelihood(data):
 
         ll = jnp.where(choice == 1, dens_true, dens_false)
 
-        return jnp.where(jnp.isfinite(ll), ll, jnp.log(1e-12))
+        return jnp.where(jnp.isfinite(ll), ll, jnp.log(min_ll))
 
     return likelihood_fun
