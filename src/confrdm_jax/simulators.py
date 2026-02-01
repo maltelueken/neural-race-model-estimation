@@ -347,6 +347,125 @@ def simulate_crdm_batch(
     return x
 
 
+def create_crdm_prior_informed(
+    v_c_intercept_loc: float = 1.0,
+    v_c_intercept_scale: float = 0.5,
+    v_c_slope_loc: float = 4.0,
+    v_c_slope_scale: float = 0.5,
+    amp_loc: float = 0.3,
+    amp_scale: float = 0.05,
+    tau_loc: float = 0.1,
+    tau_scale: float = 0.05,
+    s_loc: float = 0.8,
+    s_scale: float = 0.25,
+    b_loc: float = 0.7,
+    b_scale: float = 0.25,
+    t0_loc: float = 0.3,
+    t0_scale: float = 0.2,
+) -> distrax.Joint:
+    return distrax.Joint([
+        TruncatedNormal(v_c_intercept_loc, v_c_intercept_scale, 0.0, jnp.inf),
+        TruncatedNormal(v_c_slope_loc, v_c_slope_scale, 0.0, jnp.inf),
+        TruncatedNormal(amp_loc, amp_scale, 0.0, jnp.inf),
+        TruncatedNormal(tau_loc, tau_scale, 0.0, jnp.inf),
+        TruncatedNormal(s_loc, s_scale, 0.0, jnp.inf),
+        TruncatedNormal(b_loc, b_scale, 0.0, jnp.inf),
+        TruncatedNormal(t0_loc, t0_scale, 0.0, jnp.inf),
+    ])
+
+
+@partial(jax.jit, static_argnames=("batch_shape", "prior", "dt", "t_max"))
+def sample_conditional_crdm(
+    key: jnp.ndarray,
+    batch_shape: Tuple[int, ...],
+    prior: distrax.Joint,
+    dt: float,
+    t_max: float,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    key_context, key_data = jax.random.split(key, 2)
+
+    prior_shape = batch_shape[:-1]
+
+    context = prior.sample(seed=key_context, sample_shape=prior_shape)
+
+    keys = jax.random.split(key_data, batch_shape)
+
+    x = simulate_crdm_batch(
+        keys,
+        context[0],
+        context[1],
+        context[2],
+        context[3],
+        context[4],
+        context[5],
+        context[6],
+        dt,
+        t_max,
+    )
+
+    context = jnp.expand_dims(jnp.array(context), axis=-1)
+    context = jnp.moveaxis(jnp.array(context), 0, -1)
+
+    return jnp.expand_dims(x, -1), context
+
+
+@partial(jax.jit, static_argnames=("batch_shape", "prior", "dt", "t_max"))
+def sample_conditional_crdm_condition(
+    key: jnp.ndarray,
+    batch_shape: Tuple[int, ...],
+    prior: distrax.Joint,
+    dt: float,
+    t_max: float,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    key_context, key_data_con, key_data_inc = jax.random.split(key, 3)
+
+    prior_shape = batch_shape[:-1]
+
+    context = prior.sample(seed=key_context, sample_shape=prior_shape)
+
+    condition = jnp.ones(batch_shape)
+    condition = jnp.expand_dims(condition.at[..., (batch_shape[-1] // 2):].set(0), -1)
+
+    data_shape = batch_shape[:-1] + (batch_shape[-1] // 2,)
+
+    keys_con = jax.random.split(key_data_con, data_shape)
+
+    x_con = simulate_crdm_batch(
+        keys_con,
+        context[0],
+        context[1],
+        context[2],
+        context[3],
+        context[4],
+        context[5],
+        context[6],
+        dt,
+        t_max,
+    )
+
+    keys_inc = jax.random.split(key_data_inc, data_shape)
+
+    x_inc = simulate_crdm_batch(
+        keys_inc,
+        context[0],
+        context[1],
+        -context[2],
+        context[3],
+        context[4],
+        context[5],
+        context[6],
+        dt,
+        t_max,
+    )
+
+    x = jnp.c_[jnp.concatenate([x_con, x_inc], axis=1), condition]
+
+    context = jnp.expand_dims(jnp.array(context), axis=-1)
+    context = jnp.moveaxis(jnp.array(context), 0, -1)
+
+    return jnp.expand_dims(x, -1), context
+
+
 @partial(jax.jit, static_argnames=["dt", "t_max"])
 def simulate_crdm_single_dataset(
     keys: jnp.ndarray,
