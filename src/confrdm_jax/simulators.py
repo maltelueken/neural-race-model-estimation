@@ -116,9 +116,9 @@ def sample_conditional_wald(
 
 def create_rdm_prior_informed(
     v_intercept_loc: float = 1.0,
-    v_intercept_scale: float = 0.5,
+    v_intercept_scale: float = 0.25,
     v_scale_loc: float = 4.0,
-    v_scale_scale: float = 0.5,
+    v_scale_scale: float = 0.25,
     s_true_shape: float = 12.0,
     s_true_scale: float = 0.1,
     b_shape: float = 8.0,
@@ -349,17 +349,17 @@ def simulate_crdm_batch(
 
 def create_crdm_prior_informed(
     v_c_intercept_loc: float = 1.0,
-    v_c_intercept_scale: float = 0.5,
+    v_c_intercept_scale: float = 0.25,
     v_c_slope_loc: float = 4.0,
-    v_c_slope_scale: float = 0.5,
+    v_c_slope_scale: float = 0.25,
     amp_loc: float = 0.3,
     amp_scale: float = 0.05,
     tau_loc: float = 0.1,
     tau_scale: float = 0.05,
-    s_loc: float = 0.8,
-    s_scale: float = 0.25,
-    b_loc: float = 0.7,
-    b_scale: float = 0.25,
+    s_true_shape: float = 8.0,
+    s_true_scale: float = 0.1,
+    b_shape: float = 0.7,
+    b_scale: float = 0.1,
     t0_loc: float = 0.3,
     t0_scale: float = 0.2,
 ) -> distrax.Joint:
@@ -368,8 +368,8 @@ def create_crdm_prior_informed(
         TruncatedNormal(v_c_slope_loc, v_c_slope_scale, 0.0, jnp.inf),
         TruncatedNormal(amp_loc, amp_scale, 0.0, jnp.inf),
         TruncatedNormal(tau_loc, tau_scale, 0.0, jnp.inf),
-        TruncatedNormal(s_loc, s_scale, 0.0, jnp.inf),
-        TruncatedNormal(b_loc, b_scale, 0.0, jnp.inf),
+        distrax.Gamma(s_true_shape, 1.0 / s_true_scale),
+        distrax.Gamma(b_shape, 1.0 / b_scale),
         TruncatedNormal(t0_loc, t0_scale, 0.0, jnp.inf),
     ])
 
