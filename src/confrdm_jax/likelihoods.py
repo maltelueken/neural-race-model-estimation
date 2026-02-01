@@ -1,22 +1,41 @@
 
 import jax
 import jax.numpy as jnp
+from jax.scipy import stats
 
 from tensorflow_probability.substrates.jax import distributions
 
 
 @jax.jit
+def inv_gauss_logpdf(t, mu, lam):
+
+    e = -(lam / (2 * t)) * (t**2 / mu**2 - 2 * t / mu  + 1)
+
+    x = e + 0.5 * jnp.log(lam) - 0.5 * jnp.log(2 * t**3 * jnp.pi)
+
+    return x
+
+@jax.jit
+def inv_gauss_logsf(t, mu, lam):
+    """https://journal.r-project.org/archive/2016-1/giner-smyth.pdf"""
+    mu = mu / lam
+    t = t / lam
+    r = 1.0 / jnp.sqrt(t)
+    a = stats.norm.logcdf(-r * ((t / mu) - 1.0))
+    b = 2.0 / mu + stats.norm.logcdf(-r * (t + mu) / mu)
+    return jnp.where(jnp.isposinf(t), -jnp.inf, jnp.where(t > 0.0, a + jnp.log1p(-jnp.exp(b - a)), 0.0))
+
+@jax.jit
 def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
     rt = rt - t0
     rt = jnp.maximum(0.0, rt)
+
     # mu_winner = b/drift_winner
-    mu = b / v
+    mu = b/v
     # lam_winner = (b/s_winner)**2
-    lam = (b / s)**2
+    lam = (b/s)**2
 
-    dist = distributions.InverseGaussian(mu, lam)
-
-    return dist.log_prob(rt), dist.log_survival_function(rt)
+    return inv_gauss_logpdf(rt, mu, lam), inv_gauss_logsf(rt, mu, lam)
 
 
 def create_rdm_two_accumulators_likelihood(data):

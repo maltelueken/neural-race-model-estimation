@@ -28,7 +28,7 @@ def main(cfg):
     train_key = jax.random.key(cfg["train_seed"])
     conditioner_key, sampling_key = jax.random.split(train_key, 2)
 
-    rngs = nnx.Rngs(default=conditioner_key, sampling=sampling_key)
+    rngs = nnx.Rngs(default=conditioner_key)
 
     conditioner = make_mlp_conditioner(
         num_in=cfg["model"]["num_params"],
@@ -47,7 +47,7 @@ def main(cfg):
 
     test_data, test_context = sample_conditional_rdm(data_key, (cfg["test_num_datasets"], cfg["test_num_obs"]), prior)
 
-    def inv_gauss_log_pdf_sf(rt, v, b, s, t0):
+    def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
         rt = rt - t0
         rt = jnp.maximum(0.0, rt)
 
@@ -68,8 +68,8 @@ def main(cfg):
             b = x[3]
             t0 = x[4]
 
-            log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_true, b, s_true, t0)
-            log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_false, b, s_false, t0)
+            log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_true, s_true, b, t0)
+            log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_false, s_false, b, t0)
 
             dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
             dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
@@ -111,20 +111,24 @@ def main(cfg):
 
         return samples
     
-    sampling_keys = jax.random.split(sampling_key, test_data.shape[0])
+    sampling_key_approx, sampling_key_ref = jax.random.split(sampling_key, 2)
 
-    samples_approx = jax.vmap(recover_dataset, in_axes=(0, 0, None))(sampling_keys, test_data, create_rdm_two_accumulators_likelihood_approx)
+    sampling_keys_approx = jax.random.split(sampling_key_approx, test_data.shape[0])
+
+    samples_approx = jax.vmap(recover_dataset, in_axes=(0, 0, None))(sampling_keys_approx, test_data, create_rdm_two_accumulators_likelihood_approx)
     samples_approx.block_until_ready()
 
     logger.info(samples_approx.shape)
 
-    samples_ref = jax.vmap(recover_dataset, in_axes=(0, 0, None))(sampling_keys, test_data, create_rdm_two_accumulators_likelihood)
+    sampling_keys_ref = jax.random.split(sampling_key_ref, test_data.shape[0])
+
+    samples_ref = jax.vmap(recover_dataset, in_axes=(0, 0, None))(sampling_keys_ref, test_data, create_rdm_two_accumulators_likelihood)
     samples_ref.block_until_ready()
 
     logger.info(samples_ref.shape)
 
     results = dict(
-        samples=np.asarray(samples_approx),
+        samples_approx=np.asarray(samples_approx),
         samples_ref=np.asarray(samples_ref),
         data=np.asarray(test_data.squeeze()),
         true_params=np.asarray(test_context.squeeze())
