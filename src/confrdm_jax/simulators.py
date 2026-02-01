@@ -62,9 +62,9 @@ class TruncatedNormal(distrax.Distribution):
 def create_wald_prior_uniform(
     v_min: float = 0.0,
     v_max: float = 10.0,
-    s_min: float = 0.5,
+    s_min: float = 0.0,
     s_max: float = 3.0,
-    b_min: float = 0.2,
+    b_min: float = 0.0,
     b_max: float = 3.0,
 ) -> distrax.Joint:
     return distrax.Joint([
@@ -194,11 +194,11 @@ def create_crdm_single_prior_uniform(
     v_c_max: float = 8.0,
     amp_min: float = 0.0,
     amp_max: float = 0.5,
-    tau_min: float = 0.005,
-    tau_max: float = 0.4,
-    s_min: float = 0.5,
+    tau_min: float = 0.0,
+    tau_max: float = 0.5,
+    s_min: float = 0.0,
     s_max: float = 2.0,
-    b_min: float = 0.2,
+    b_min: float = 0.0,
     b_max: float = 2.0,
 ) -> distrax.Joint:
     return distrax.Joint([
