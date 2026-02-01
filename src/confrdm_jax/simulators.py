@@ -351,7 +351,7 @@ def create_crdm_prior_informed(
     v_c_intercept_loc: float = 1.0,
     v_c_intercept_scale: float = 0.25,
     v_c_slope_loc: float = 4.0,
-    v_c_slope_scale: float = 0.25,
+    v_c_slope_scale: float = 0.5,
     amp_loc: float = 0.3,
     amp_scale: float = 0.05,
     tau_loc: float = 0.1,
