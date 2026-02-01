@@ -107,9 +107,7 @@ def main(cfg):
             sampling_key, kernel, last_states, cfg["mcmc"]["num_sampling"], num_chains,
         )
 
-        samples = jnp.moveaxis(jnp.exp(trace.position), (0, 1, 2), (2, 1, 0))
-
-        return samples
+        return jnp.exp(trace.position)
     
     sampling_key_approx, sampling_key_ref = jax.random.split(sampling_key, 2)
 
