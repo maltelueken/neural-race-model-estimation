@@ -358,7 +358,7 @@ def create_crdm_prior_informed(
     tau_scale: float = 0.05,
     s_true_shape: float = 8.0,
     s_true_scale: float = 0.1,
-    b_shape: float = 0.7,
+    b_shape: float = 7.0,
     b_scale: float = 0.1,
     t0_loc: float = 0.3,
     t0_scale: float = 0.2,
