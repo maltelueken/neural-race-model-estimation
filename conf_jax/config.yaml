@@ -3,6 +3,7 @@
 defaults:
  - _self_
  - model: rdm
+ - optimizer: adamw
  - sweeper: basic
 
 hydra:

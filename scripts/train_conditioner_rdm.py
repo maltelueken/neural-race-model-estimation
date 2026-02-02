@@ -3,8 +3,8 @@ import logging
 from pathlib import Path
 import hydra
 import jax
-import optax
 from flax import nnx
+from hydra.utils import instantiate
 from tqdm import tqdm
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.flows import save_conditioner
@@ -43,10 +43,8 @@ def main(cfg):
         rngs=rngs,
     )
 
-    learning_rate = cfg["learning_rate"] # optax.schedules.cosine_decay_schedule(0.005, train_steps, 1e-6)
-
     optimizer = nnx.Optimizer(
-        conditioner, optax.adamw(learning_rate), wrt=nnx.Param,
+        conditioner, instantiate(cfg["optimizer"]), wrt=nnx.Param,
     )
     metrics = nnx.MultiMetric(
         loss=nnx.metrics.Average("loss"),

@@ -1,0 +1,6 @@
+_target_: optax.adamw
+learning_rate:
+  _target_: optax.schedules.cosine_decay_schedule
+  init_value: ${learning_rate}
+  decay_steps: ${train_steps}
+  alpha: 1e-6
