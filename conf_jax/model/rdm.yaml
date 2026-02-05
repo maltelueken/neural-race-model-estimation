@@ -2,6 +2,9 @@ defaults:
   - /prior@training_prior: wald_uniform
   - /prior@recovery_prior: rdm_informed
 
+sampler:
+  _target_: confrdm_jax.simulators.sample_conditional_wald
+
 num_bins: 4
 num_mid: 64
 num_params: 3

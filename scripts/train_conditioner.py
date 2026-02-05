@@ -9,8 +9,6 @@ from tqdm import tqdm
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.flows import save_conditioner
 from confrdm_jax.flows import train_step
-from confrdm_jax.simulators import create_wald_prior_uniform
-from confrdm_jax.simulators import sample_conditional_wald
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +17,8 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
-    prior = create_wald_prior_uniform(**cfg["model"]["training_prior"])
+    prior = instantiate(cfg["model"]["training_prior"])
+    sampler = instantiate(cfg["model"]["sampler"], _partial_=True)
 
     train_steps = cfg["train_steps"]
 
@@ -51,7 +50,7 @@ def main(cfg):
     )
 
     for step in tqdm(range(train_steps)):
-        data, context = sample_conditional_wald(rngs.sampling(), batch_shape, prior)
+        data, context = sampler(rngs.sampling(), batch_shape, prior)
 
         conditioner.train()
 
@@ -65,6 +64,8 @@ def main(cfg):
 
     if cfg["save"]:
         save_conditioner(conditioner, Path("conditioner").absolute())
+
+    return metrics.compute()["loss"]
 
 if __name__ == "__main__":
     main()

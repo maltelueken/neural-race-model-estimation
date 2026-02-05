@@ -2,11 +2,13 @@ defaults:
   - /prior@training_prior: crdm_single_uniform
   - /prior@recovery_prior: crdm_informed
 
+sampler:
+  _target_: confrdm_jax.simulators.sample_conditional_crdm_single
+  dt: 0.004
+  t_max: 4.0
+
 num_bins: 4
 num_mid: 64
 num_params: 5
-
-dt: 0.004
-t_max: 4.0
 
 test_dt: 0.001
