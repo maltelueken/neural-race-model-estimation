@@ -35,7 +35,7 @@ save: true
 
 test_seed: 3500
 test_num_obs: 500
-test_num_datasets: 2
+test_num_datasets: 50
 
 learning_rate: 5e-3
 
