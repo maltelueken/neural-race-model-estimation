@@ -5,6 +5,20 @@ defaults:
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_wald
 
+test_sampler:
+  _target_: confrdm_jax.simulators.sample_conditional_rdm
+
+log_prior:
+  _target_: confrdm_jax.priors.rdm_prior
+
+likelihood_factory_approx:
+  _target_: confrdm_jax.likelihoods.create_rdm_likelihood_factory_approx
+
+likelihood_factory_ref:
+  _target_: confrdm_jax.likelihoods.create_rdm_two_accumulators_likelihood
+
+run_reference_recovery: true
+
 num_bins: 4
 num_mid: 64
 num_params: 3

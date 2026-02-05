@@ -1,3 +1,4 @@
+_target_: confrdm_jax.simulators.create_crdm_prior_informed
 v_c_intercept_loc: 1.0
 v_c_intercept_scale: 0.25
 v_c_slope_loc: 4.0

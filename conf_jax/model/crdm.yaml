@@ -7,8 +7,19 @@ sampler:
   dt: 0.004
   t_max: 4.0
 
+test_sampler:
+  _target_: confrdm_jax.simulators.sample_conditional_crdm_condition
+  dt: 0.001
+  t_max: 4.0
+
+log_prior:
+  _target_: confrdm_jax.priors.crdm_prior
+
+likelihood_factory_approx:
+  _target_: confrdm_jax.likelihoods.create_crdm_likelihood_factory_approx
+
+run_reference_recovery: false
+
 num_bins: 4
 num_mid: 64
 num_params: 5
-
-test_dt: 0.001
