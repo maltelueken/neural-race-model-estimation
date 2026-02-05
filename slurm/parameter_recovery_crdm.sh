@@ -15,9 +15,10 @@ module load 2023
 
 source bin/activate
 
-python scripts/parameter_recovery_crdm.py \
-    model=crdm \
+python scripts/parameter_recovery.py \
+    mmodel=crdm \
     model.dt=0.0005 \
     model.num_bins=12 \
-    model.num_mid=64 \
-    train_steps=200000
+    model.num_mid=128 \
+    train_steps=1000000 \
+    optimizer=adam_cosine_decay

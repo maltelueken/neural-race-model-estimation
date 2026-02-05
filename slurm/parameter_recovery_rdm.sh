@@ -16,6 +16,8 @@ module load 2023
 source bin/activate
 
 python scripts/parameter_recovery_rdm.py \
-    model.num_bins=8 \
-    model.num_mid=64 \
-    train_steps=200000
+    model=rdm \
+    model.num_bins=12 \
+    model.num_mid=128 \
+    train_steps=500000 \
+    optimizer=adam_cosine_decay

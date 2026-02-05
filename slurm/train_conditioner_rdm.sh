@@ -15,7 +15,9 @@ module load 2023
 
 source bin/activate
 
-python scripts/train_conditioner_rdm.py \
-    model.num_bins=8 \
-    model.num_mid=64 \
-    train_steps=1000000
+python scripts/train_conditioner.py \
+    model=rdm \
+    model.num_bins=12 \
+    model.num_mid=128 \
+    train_steps=500000 \
+    optimizer=adam_cosine_decay
