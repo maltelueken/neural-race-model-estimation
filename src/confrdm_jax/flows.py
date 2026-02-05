@@ -51,24 +51,14 @@ def spline_flow(data, context, conditioner):
 
 
 def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):
-  # 1. Identify invalid data (simulated data that causes NaNs).
-  #    Since your flow includes a Log (Inverse Exp), data <= 0 is invalid.
-  #    We also check for Infs or existing NaNs.
   data_flat = data.squeeze()
+
   is_valid = jnp.isfinite(data_flat) & (data_flat > 0.0)
 
-  # 2. Create "Safe Data".
-  #    Replace invalid data with a dummy safe value (e.g., 1.0) BEFORE the flow.
-  #    This ensures the flow acts on valid numbers, preventing NaNs in the graph.
   safe_data = jnp.where(is_valid, data_flat, 1.0)
 
-  # 3. Run the flow on safe data.
-  #    Since safe_data is always valid, safe_log_probs will not be NaN.
   safe_log_probs, _ = spline_flow(safe_data, context, conditioner)
 
-  # 4. Mask the loss.
-  #    We use the mask to zero out the contribution of the invalid data.
-  #    Since safe_log_probs is finite, 0 * Finite = 0, so gradients are safe.
   final_log_probs = jnp.where(is_valid, safe_log_probs, jnp.log(min_log_prob))
   
   return -jnp.mean(final_log_probs)
@@ -97,21 +87,16 @@ def evaluate_pdf_sf(conditioner, data, context):
 
 
 def save_conditioner(conditioner, path, step=0):
-    # 1. Split to get the state (weights)
     _, state = nnx.split(conditioner)
 
     options = ocp.CheckpointManagerOptions(max_to_keep=1, create=True)
 
-    # Remove 'erase_and_create_empty' for production use; 'create=True' handles creation.
-    # passing the path directly allows appending to existing checkpoints.
     with ocp.CheckpointManager(ocp.test_utils.erase_and_create_empty(path), options=options) as mngr:
         mngr.save(step, args=ocp.args.StandardSave(state))
         mngr.wait_until_finished()
 
 
 def load_conditioner(conditioner, path, step=0):
-    # 1. Create an abstract version of the state to tell Orbax what to look for.
-    # Using the instance `conditioner` here is okay if its structure matches the saved one.
     abstract_model = nnx.eval_shape(lambda: conditioner)
     graphdef, abstract_state = nnx.split(abstract_model)
 
@@ -128,13 +113,7 @@ def load_conditioner(conditioner, path, step=0):
 
     options = ocp.CheckpointManagerOptions()
     with ocp.CheckpointManager(path, options=options) as mngr:
-        # 2. Restore the state. StandardRestore uses abstract_state as the schema.
         state_restored = mngr.restore(step, args=ocp.args.StandardRestore(change_sharding_abstract_state))
         mngr.wait_until_finished()
 
-    # 3. CRITICAL: Update the existing instance in-place.
-    # This ensures 'conditioner' now contains the loaded weights.
-    # nnx.merge(conditioner, state_restored)
-
-    # If you prefer returning a new model, you would use:
     return nnx.merge(graphdef, state_restored)

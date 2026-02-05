@@ -3,8 +3,6 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 
-from tensorflow_probability.substrates.jax import distributions
-
 
 @jax.jit
 def inv_gauss_logpdf(t, mu, lam):
