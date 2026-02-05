@@ -1,0 +1,10 @@
+v_c_min: 0.0
+v_c_max: 8.0
+amp_min: 0.0
+amp_max: 0.5
+tau_min: 0.0
+tau_max: 0.5
+s_min: 0.0
+s_max: 2.0
+b_min: 0.0
+b_max: 2.0

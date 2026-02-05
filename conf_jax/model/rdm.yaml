@@ -1,3 +1,6 @@
+defaults:
+  - /prior@training_prior: wald_uniform
+  - /prior@recovery_prior: rdm_informed
 
 num_bins: 4
 num_mid: 64

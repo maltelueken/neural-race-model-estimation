@@ -19,7 +19,7 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
-    prior = create_wald_prior_uniform()
+    prior = create_wald_prior_uniform(**cfg["model"]["training_prior"])
 
     train_steps = cfg["train_steps"]
 

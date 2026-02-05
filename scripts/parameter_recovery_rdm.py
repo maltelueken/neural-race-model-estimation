@@ -43,7 +43,7 @@ def main(cfg):
     test_key = jax.random.key(cfg["test_seed"])
     data_key, sampling_key = jax.random.split(test_key, 2)
 
-    prior = create_rdm_prior_informed()
+    prior = create_rdm_prior_informed(**cfg["model"]["recovery_prior"])
 
     test_data, test_context = sample_conditional_rdm(data_key, (cfg["test_num_datasets"], cfg["test_num_obs"]), prior)
 

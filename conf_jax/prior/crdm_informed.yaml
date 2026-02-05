@@ -1,0 +1,14 @@
+v_c_intercept_loc: 1.0
+v_c_intercept_scale: 0.25
+v_c_slope_loc: 4.0
+v_c_slope_scale: 0.5
+amp_loc: 0.3
+amp_scale: 0.05
+tau_loc: 0.1
+tau_scale: 0.05
+s_true_shape: 8.0
+s_true_scale: 0.1
+b_shape: 7.0
+b_scale: 0.1
+t0_loc: 0.3
+t0_scale: 0.2

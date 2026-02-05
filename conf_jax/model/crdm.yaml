@@ -1,3 +1,6 @@
+defaults:
+  - /prior@training_prior: crdm_single_uniform
+  - /prior@recovery_prior: crdm_informed
 
 num_bins: 4
 num_mid: 64

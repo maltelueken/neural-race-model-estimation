@@ -1,0 +1,10 @@
+v_intercept_loc: 1.0
+v_intercept_scale: 0.25
+v_scale_loc: 1.5
+v_scale_scale: 0.5
+s_true_shape: 12.0
+s_true_scale: 0.1
+b_shape: 8.0
+b_scale: 0.15
+t0_loc: 0.3
+t0_scale: 0.2
