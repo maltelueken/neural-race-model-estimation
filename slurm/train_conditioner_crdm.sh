@@ -17,7 +17,7 @@ source bin/activate
 
 python scripts/train_conditioner.py \
     model=crdm \
-    model.dt=0.0005 \
+    model.sampler.dt=0.0005 \
     model.num_bins=12 \
     model.num_mid=128 \
     train_steps=1000000 \

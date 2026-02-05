@@ -16,8 +16,8 @@ module load 2023
 source bin/activate
 
 python scripts/parameter_recovery.py \
-    mmodel=crdm \
-    model.dt=0.0005 \
+    model=crdm \
+    model.sampler.dt=0.0005 \
     model.num_bins=12 \
     model.num_mid=128 \
     train_steps=1000000 \
