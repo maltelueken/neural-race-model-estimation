@@ -24,5 +24,5 @@ python scripts/parameter_recovery.py \
     model.num_mid=128 \
     train_steps=1000000 \
     optimizer=adam_cosine_decay \
-    model.recovery_prior.v_c_slope_loc=1.5 \
+    model.recovery_prior.v_c_slope_loc=2.5 \
     conditioner_dir="${base_dir}/outputs/crdm/model.num_bins\=12/model.num_mid\=128/model.sampler.dt\=0.0005/optimizer\=adam_cosine_decay/train_steps\=1000000"
