@@ -10,6 +10,7 @@ from confrdm_jax.likelihoods import (
 
 
 NUM_PARAMS = 5
+NUM_POP_PARAMS = 8  # 2+2+1+1+2 for truncnorm/gamma/truncnorm groups
 
 
 def _make_synthetic_data(key, num_subjects=3, trial_counts=None):
@@ -40,18 +41,24 @@ def _make_synthetic_data(key, num_subjects=3, trial_counts=None):
 
 
 def _make_param_vector(key, num_subjects=3):
-    """Create a plausible hierarchical parameter vector in log-space."""
-    # Population params: mu and sigma for each of the 5 RDM params
-    # Reasonable RDM params (in natural space): v_intercept~1, v_slope~1.5, s_true~1.2, b~1.2, t0~0.3
+    """Create a plausible hierarchical parameter vector in log-space.
+
+    Layout: [mu_v_int, sigma_v_int, mu_v_slope, sigma_v_slope,
+             scale_s_true, scale_b, mu_t0, sigma_t0,
+             subj_0_p0, ..., subj_S_pP]
+    """
+    # Population params (8 values): matching the prior group structure
+    # Truncated normal groups: (mu, sigma), Gamma groups: (scale,)
+    pop_params = jnp.array([
+        1.0, 0.1,    # v_intercept: mu, sigma
+        1.5, 0.2,    # v_slope: mu, sigma
+        1.2,         # s_true: scale
+        1.2,         # b: scale
+        0.3, 0.05,   # t0: mu, sigma
+    ])
+
+    # Subject params drawn near reasonable values
     pop_mu = jnp.array([1.0, 1.5, 1.2, 1.2, 0.3])
-    pop_sigma = jnp.array([0.1, 0.2, 0.1, 0.1, 0.05])
-
-    # Interleave: [mu_1, sigma_1, mu_2, sigma_2, ...]
-    pop_params = jnp.zeros(2 * NUM_PARAMS)
-    pop_params = pop_params.at[0::2].set(pop_mu)
-    pop_params = pop_params.at[1::2].set(pop_sigma)
-
-    # Subject params drawn near population means
     subj_params = jnp.tile(pop_mu, (num_subjects, 1))
     subj_params = subj_params + 0.05 * jax.random.normal(key, (num_subjects, NUM_PARAMS))
     subj_params = jnp.maximum(subj_params, 0.01)  # keep positive before log
@@ -112,7 +119,7 @@ class TestRdmHierarchicalLikelihood:
         mask = jnp.ones((1, n_trials), dtype=bool)
 
         # Population params don't affect likelihood, only prior
-        pop_params = jnp.zeros(2 * NUM_PARAMS)
+        pop_params = jnp.zeros(NUM_POP_PARAMS)
         x = jnp.concatenate([pop_params, subj_params_log])
 
         hier_ll_fn = create_rdm_hierarchical_likelihood(data, mask)

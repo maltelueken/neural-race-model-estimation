@@ -7,13 +7,14 @@ from confrdm_jax.flows import evaluate_pdf_sf
 from .rdm import inv_gauss_log_pdf_sf
 
 
-def create_rdm_hierarchical_likelihood(data, mask, num_params=5):
+def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=8):
     """Hierarchical analytical likelihood for multi-subject RDM.
 
     Args:
         data: Padded trial data, shape (S, max_trials, 2) with columns [RT, choice].
         mask: Boolean mask, shape (S, max_trials). True for real trials.
         num_params: Number of per-subject RDM parameters (default 5).
+        num_pop_params: Number of population-level parameters in the flat vector (default 8).
 
     Returns:
         A JIT-compiled function `likelihood_fun(x)` that takes a flat parameter vector
@@ -49,18 +50,19 @@ def create_rdm_hierarchical_likelihood(data, mask, num_params=5):
 
     @jax.jit
     def likelihood_fun(x):
-        subj_params = x[2 * num_params :].reshape(num_subjects, num_params)
+        subj_params = x[num_pop_params:].reshape(num_subjects, num_params)
         return jnp.sum(_vmapped_ll(data, mask, subj_params))
 
     return likelihood_fun
 
 
-def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5):
+def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5, num_pop_params=8):
     """Factory for hierarchical neural-approximate likelihood for multi-subject RDM.
 
     Args:
         conditioner: Trained neural network conditioner for density estimation.
         num_params: Number of per-subject RDM parameters (default 5).
+        num_pop_params: Number of population-level parameters in the flat vector (default 8).
 
     Returns:
         A function `create_likelihood(data, mask)` that returns a likelihood function.
@@ -101,7 +103,7 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5)
 
         @nnx.jit
         def likelihood_fun(x):
-            subj_params = x[2 * num_params :].reshape(num_subjects, num_params)
+            subj_params = x[num_pop_params:].reshape(num_subjects, num_params)
             return jnp.sum(_vmapped_ll(data, mask, subj_params))
 
         return likelihood_fun

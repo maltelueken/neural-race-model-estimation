@@ -46,3 +46,14 @@ mcmc:
   num_warmup: 2000
   num_sampling: 1000
   num_chains: 4
+
+# Hierarchical recovery settings
+hierarchical_recovery:
+  num_subjects: 10
+  test_num_populations: 1
+  test_num_obs_per_subject: 500
+
+  mcmc:
+    num_warmup: 500
+    num_sampling: 500
+    num_chains: 4
