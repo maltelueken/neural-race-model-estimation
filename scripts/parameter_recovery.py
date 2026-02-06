@@ -45,7 +45,7 @@ def main(cfg):
 
     # Instantiate prior and sampler from config
     prior = instantiate(cfg["model"]["recovery_prior"])
-    test_sampler = instantiate(cfg["model"]["test_sampler"], _partial_=True)
+    test_sampler = instantiate(cfg["model"]["test_sampler"])
     log_prior = instantiate(cfg["model"]["log_prior"])
 
     # Generate test data
