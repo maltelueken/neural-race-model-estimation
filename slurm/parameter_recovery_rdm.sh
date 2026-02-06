@@ -15,7 +15,7 @@ module load 2023
 
 source bin/activate
 
-python scripts/parameter_recovery_rdm.py \
+python scripts/parameter_recovery.py \
     model=rdm \
     model.num_bins=12 \
     model.num_mid=128 \
