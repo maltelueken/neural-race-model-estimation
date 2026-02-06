@@ -46,7 +46,11 @@ def main(cfg):
     # Instantiate prior and sampler from config
     prior = instantiate(cfg["model"]["recovery_prior"])
     test_sampler = instantiate(cfg["model"]["test_sampler"])
-    log_prior = instantiate(cfg["model"]["log_prior"])
+
+    @jax.jit
+    def log_prior(x):
+        params = jnp.exp(x)
+        return prior.log_prob([params[i] for i in range(params.shape[0])])
 
     # Generate test data
     test_data, test_context = test_sampler(
