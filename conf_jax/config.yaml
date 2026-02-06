@@ -19,6 +19,7 @@ hydra:
         item_sep: "/"
         exclude_keys:
           - model
+          - conditioner_dir
     env_set:
       JAX_ENABLE_X64: true
   job_logging:
@@ -32,6 +33,8 @@ train_num_obs: 500
 train_seed: 2026
 
 save: true
+
+conditioner_dir: .
 
 test_seed: 3500
 test_num_obs: 500

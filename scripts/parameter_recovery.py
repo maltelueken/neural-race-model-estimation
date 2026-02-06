@@ -33,7 +33,7 @@ def main(cfg):
         rngs=rngs,
     )
 
-    conditioner_path = Path("conditioner").absolute()
+    conditioner_path = Path(cfg["conditioner_dir"]).absolute() / "conditioner"
 
     logger.info("Loading conditioner from: %s", conditioner_path)
 
