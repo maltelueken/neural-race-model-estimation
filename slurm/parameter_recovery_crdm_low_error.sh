@@ -9,7 +9,9 @@
 #SBATCH --output=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/parameter_recovery_crdm_%j.out
 #SBATCH --error=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/parameter_recovery_crdm_%j.err
 
-cd /projects/0/prjs1372/racing-diffusion-conflict
+base_dir=/projects/0/prjs1372/racing-diffusion-conflict
+
+cd ${base_dir}
 
 module load 2023
 
@@ -21,4 +23,6 @@ python scripts/parameter_recovery.py \
     model.num_bins=12 \
     model.num_mid=128 \
     train_steps=1000000 \
-    optimizer=adam_cosine_decay
+    optimizer=adam_cosine_decay \
+    model.recovery_prior.v_c_slope_loc=4.0 \
+    conditioner_dir="${base_dir}/outputs/crdm/model.num_bins\=12/model.num_mid\=128/model.sampler.dt\=0.0005/optimizer\=adam_cosine_decay/train_steps\=1000000"
