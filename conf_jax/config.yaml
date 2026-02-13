@@ -60,7 +60,10 @@ hierarchical_recovery:
     mu_loc: [-0.4, 0.4, -0.2, 0.5, -1.0]
     mu_scale: [0.5, 0.5, 0.5, 0.5, 0.5]
 
-  mcmc:
-    num_warmup: 500
-    num_sampling: 500
+  smc:
+    num_particles: 1000
     num_chains: 4
+    num_warmup: 2000
+    num_integration_steps: 100
+    num_mcmc_steps: 1
+    target_ess: 0.5

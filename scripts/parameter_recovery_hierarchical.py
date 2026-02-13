@@ -4,10 +4,12 @@ from functools import partial
 from pathlib import Path
 
 import blackjax
+import blackjax.smc.resampling as resampling
 import hydra
 import jax
 import jax.numpy as jnp
 import numpy as np
+from blackjax.smc import extend_params
 from flax import nnx
 from confrdm.data import save_hdf5
 from confrdm_jax.distributions import (
@@ -18,10 +20,9 @@ from confrdm_jax.flows import load_conditioner
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood
 from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood_factory_approx
-from confrdm_jax.mcmc import inference_loop_multiple_chains
-from confrdm_jax.mcmc import warmup
 from confrdm_jax.simulators import create_hierarchical_rdm_prior_lkj_mvn
 from confrdm_jax.simulators import sample_conditional_rdm_hierarchical_lkj_mvn
+from confrdm_jax.smc import smc_inference_loop
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,29 @@ def context_to_true_params(context):
     return pop_params, subj_params
 
 
+def sample_prior_particles(prior, num_particles, num_subjects, P, rng_key):
+    """Draw particles from the hierarchical prior and flatten to MCMC parameterization.
+
+    Args:
+        prior: HierarchicalRDMPriorLKJMVN instance.
+        num_particles: Number of particles to draw.
+        num_subjects: Number of subjects S.
+        P: Number of per-subject parameters.
+        rng_key: JAX PRNG key.
+
+    Returns:
+        Array of shape (num_particles, num_flat_params).
+    """
+    keys = jax.random.split(rng_key, num_particles)
+
+    def sample_and_flatten(key):
+        s, L, mu, log_theta = prior.sample(seed=key)
+        L_flat = cholesky_to_flat(L)
+        return jnp.concatenate([mu, L_flat, log_theta.ravel()])
+
+    return jax.vmap(sample_and_flatten)(keys)
+
+
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
     hier_cfg = cfg["hierarchical_recovery"]
@@ -154,10 +178,10 @@ def main(cfg):
         conditioner, num_params=P, num_pop_params=num_pop_params,
     )
 
-    mcmc_cfg = hier_cfg["mcmc"]
+    smc_cfg = hier_cfg["smc"]
 
-    def log_prior(x):
-        """Log-prior on the flat MCMC vector using CholeskyLKJ-MVN prior.
+    def log_prior_fn(x):
+        """Log-prior on the flat vector using CholeskyLKJ-MVN prior.
 
         Uses HierarchicalRDMPriorLKJMVN.log_prob(L, mu, log_theta) which
         evaluates the joint distribution at (s, L, mu, log_theta) with
@@ -179,31 +203,46 @@ def main(cfg):
 
         return lp
 
-    def recover_population(sampling_key, data, mask, create_likelihood_fun, init_params):
-        """Run MCMC to recover hierarchical parameters for one population."""
-        likelihood_fun = create_likelihood_fun(data, mask)
+    def recover_population(sampling_key, data, mask, create_likelihood_fun):
+        """Run tempered SMC to recover hierarchical parameters for one population."""
+        log_likelihood_fn = create_likelihood_fun(data, mask)
 
-        def logdensity_fun(x):
-            return log_prior(x) + likelihood_fun(x)
-
-        sampling_key, warmup_key = jax.random.split(sampling_key)
-
-        kernel, last_state, _ = warmup(
-            blackjax.nuts,
-            logdensity_fun,
-            init_params,
-            mcmc_cfg["num_warmup"],
-            warmup_key,
+        hmc_parameters = dict(
+            step_size=smc_cfg["step_size"],
+            inverse_mass_matrix=jnp.ones(num_pop_params + num_subjects * P),
+            num_integration_steps=smc_cfg["num_integration_steps"],
         )
 
-        num_chains = mcmc_cfg["num_chains"]
-        last_states = jax.vmap(lambda _: last_state)(jnp.arange(num_chains))
-
-        trace = inference_loop_multiple_chains(
-            sampling_key, kernel, last_states, mcmc_cfg["num_sampling"], num_chains,
+        tempered = blackjax.adaptive_tempered_smc(
+            log_prior_fn,
+            log_likelihood_fn,
+            blackjax.hmc.build_kernel(),
+            blackjax.hmc.init,
+            extend_params(hmc_parameters),
+            resampling.systematic,
+            smc_cfg["target_ess"],
+            num_mcmc_steps=smc_cfg["num_mcmc_steps"],
         )
 
-        return trace.position
+        # Sample initial particles from the prior
+        sampling_key, particle_key = jax.random.split(sampling_key)
+        initial_particles = sample_prior_particles(
+            prior, smc_cfg["num_particles"], num_subjects, P, particle_key,
+        )
+        initial_state = tempered.init(initial_particles)
+
+        # Run SMC with multiple chains
+        num_chains = smc_cfg["num_chains"]
+        sample_keys = jax.random.split(sampling_key, num_chains)
+
+        n_iter, final_state, state_history = jax.vmap(
+            smc_inference_loop, in_axes=(0, None, None),
+        )(sample_keys, tempered.step, initial_state)
+
+        # Trim history to actual number of iterations
+        state_history = jax.tree.map(lambda h: h[:, :n_iter[0] + 1], state_history)
+
+        return final_state, state_history, n_iter
 
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
@@ -227,9 +266,6 @@ def main(cfg):
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
-        # Build initial position from true params
-        init_position = context_to_flat(context)
-
         # Save true parameters
         pop_params_true, subj_params_true = context_to_true_params(context)
 
@@ -237,16 +273,15 @@ def main(cfg):
         logger.info("Running approximate recovery...")
         sampling_key, approx_key = jax.random.split(sampling_key)
 
-        samples_approx = recover_population(
-            approx_key, data, mask, likelihood_factory_approx, init_position,
+        final_state, state_history, n_iter = recover_population(
+            approx_key, data, mask, likelihood_factory_approx,
         )
-        samples_approx.block_until_ready()
-        logger.info("Approx samples shape: %s", samples_approx.shape)
+        logger.info("SMC converged in %s iterations", n_iter)
 
-        # Convert samples to interpretable form
-        # samples_approx has shape (num_chains, num_samples, num_params)
+        # Final particles shape: (num_chains, num_particles, num_params)
         pop_results = {
-            f"pop{pop_idx}_samples_approx": np.asarray(samples_approx),
+            f"pop{pop_idx}_particles_approx": np.asarray(final_state.particles),
+            f"pop{pop_idx}_log_weights_approx": np.asarray(final_state.weights),
             f"pop{pop_idx}_data": np.asarray(data),
             f"pop{pop_idx}_pop_mu_true": pop_params_true['mu'],
             f"pop{pop_idx}_pop_L_true": pop_params_true['L'],
@@ -265,12 +300,12 @@ def main(cfg):
                 create_rdm_hierarchical_likelihood,
                 num_params=P, num_pop_params=num_pop_params,
             )
-            samples_ref = recover_population(
-                ref_key, data, mask, ref_likelihood, init_position,
+            final_state_ref, _, n_iter_ref = recover_population(
+                ref_key, data, mask, ref_likelihood,
             )
-            samples_ref.block_until_ready()
-            logger.info("Ref samples shape: %s", samples_ref.shape)
-            pop_results[f"pop{pop_idx}_samples_ref"] = np.asarray(samples_ref)
+            logger.info("Ref SMC converged in %s iterations", n_iter_ref)
+            pop_results[f"pop{pop_idx}_particles_ref"] = np.asarray(final_state_ref.particles)
+            pop_results[f"pop{pop_idx}_log_weights_ref"] = np.asarray(final_state_ref.weights)
 
         all_results.update(pop_results)
 
