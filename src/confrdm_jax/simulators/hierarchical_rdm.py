@@ -57,9 +57,9 @@ class HierarchicalRDMPriorLKJMVN:
         self._mu_scale = mu_scale
 
         self._joint = tfd.JointDistributionSequential([
-            tfd.HalfNormal(halfnormal_scale),
-            lambda s: tfd.TransformedDistribution(tfd.CholeskyLKJ(P, lkj_concentration), tfb.ScaleMatvecDiag(s)),
-            tfd.Normal(mu_loc, mu_scale),
+            tfd.Independent(tfd.HalfNormal(halfnormal_scale), 1),
+            lambda s: tfd.TransformedDistribution(tfd.CholeskyLKJ(P, jnp.asarray(lkj_concentration, dtype=s.dtype)), tfb.ScaleMatvecDiag(s)),
+            tfd.Independent(tfd.Normal(mu_loc, mu_scale), 1),
             lambda mu, psi: tfd.Sample(
                 tfd.MultivariateNormalTriL(
                     mu,

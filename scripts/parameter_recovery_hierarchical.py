@@ -22,19 +22,23 @@ from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood
 from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood_factory_approx
 from confrdm_jax.simulators import create_hierarchical_rdm_prior_lkj_mvn
 from confrdm_jax.simulators import sample_conditional_rdm_hierarchical_lkj_mvn
+from confrdm_jax.mcmc import warmup
 from confrdm_jax.smc import smc_inference_loop
 
 logger = logging.getLogger(__name__)
 
 logging.getLogger("absl").setLevel(logging.ERROR)
 
-# jax.config.update('jax_enable_x64', True)
+jax.config.update('jax_enable_x64', True)
 
 
 def context_to_flat(context):
-    """Convert LKJ-MVN hierarchical prior sample (dict) to flat vector for MCMC.
+    """Convert LKJ-MVN hierarchical prior sample (dict) to flat vector (non-centered).
 
-    Layout: [mu (P), log_diag_L (P), offdiag_L (P*(P-1)/2), log_theta (S*P)]
+    Layout: [mu (P), log_diag_L (P), offdiag_L (P*(P-1)/2), eta (S*P)]
+
+    Uses non-centered parameterization: eta = L^{-1} @ (log_theta - mu) so that
+    log_theta = mu + L @ eta, where eta ~ N(0, I).
 
     Args:
         context: Dictionary from create_rdm_hierarchical_lkj_mvn_prior.
@@ -49,13 +53,16 @@ def context_to_flat(context):
     # Flatten Cholesky factor
     L_flat = cholesky_to_flat(L)  # [log_diag, offdiag]
 
-    return jnp.concatenate([mu, L_flat, log_theta.ravel()])
+    # Non-centered: eta = L^{-1} @ (log_theta - mu) for each subject
+    eta = jax.scipy.linalg.solve_triangular(L, (log_theta - mu).T, lower=True).T  # (S, P)
+
+    return jnp.concatenate([mu, L_flat, eta.ravel()])
 
 
 def flat_to_prior_sample(x, num_subjects, P):
-    """Convert flat parameter vector back to prior sample structure.
+    """Convert flat parameter vector back to prior sample structure (non-centered).
 
-    Inverse of context_to_flat.
+    Inverse of context_to_flat. Reconstructs log_theta = mu + L @ eta.
 
     Args:
         x: Flat vector of length NUM_POP_PARAMS + S*P.
@@ -63,21 +70,25 @@ def flat_to_prior_sample(x, num_subjects, P):
         P: Number of per-subject parameters.
 
     Returns:
-        Dictionary with keys: 'mu', 'L', 'Sigma', 'log_theta', 'theta'.
+        Dictionary with keys: 'mu', 'L', 'Sigma', 'eta', 'log_theta', 'theta'.
     """
     num_pop_params = P + P + P * (P - 1) // 2
     mu = x[:P]
     L_flat = x[P:num_pop_params]
-    log_theta = x[num_pop_params:].reshape(num_subjects, P)
+    eta = x[num_pop_params:].reshape(num_subjects, P)
 
     L = flat_to_cholesky(L_flat, P)
     Sigma = L @ L.T
+
+    # Non-centered: log_theta = mu + L @ eta
+    log_theta = mu + (eta @ L.T)  # (S, P) = (S, P) + (S, P) @ (P, P)
     theta = jnp.exp(log_theta)
 
     return {
         'mu': mu,
         'L': L,
         'Sigma': Sigma,
+        'eta': eta,
         'log_theta': log_theta,
         'theta': theta,
     }
@@ -106,7 +117,10 @@ def context_to_true_params(context):
 
 
 def sample_prior_particles(prior, num_particles, num_subjects, P, rng_key):
-    """Draw particles from the hierarchical prior and flatten to MCMC parameterization.
+    """Draw particles from the hierarchical prior in non-centered parameterization.
+
+    Samples (s, L, mu, log_theta) from the prior and converts to
+    [mu, L_flat, eta] where eta = L^{-1} @ (log_theta - mu).
 
     Args:
         prior: HierarchicalRDMPriorLKJMVN instance.
@@ -123,7 +137,9 @@ def sample_prior_particles(prior, num_particles, num_subjects, P, rng_key):
     def sample_and_flatten(key):
         s, L, mu, log_theta = prior.sample(seed=key)
         L_flat = cholesky_to_flat(L)
-        return jnp.concatenate([mu, L_flat, log_theta.ravel()])
+        # Non-centered: eta = L^{-1} @ (log_theta - mu)
+        eta = jax.scipy.linalg.solve_triangular(L, (log_theta - mu).T, lower=True).T
+        return jnp.concatenate([mu, L_flat, eta.ravel()])
 
     return jax.vmap(sample_and_flatten)(keys)
 
@@ -181,35 +197,77 @@ def main(cfg):
     smc_cfg = hier_cfg["smc"]
 
     def log_prior_fn(x):
-        """Log-prior on the flat vector using CholeskyLKJ-MVN prior.
+        """Log-prior on the flat vector using non-centered parameterization.
 
-        Uses HierarchicalRDMPriorLKJMVN.log_prob(L, mu, log_theta) which
-        evaluates the joint distribution at (s, L, mu, log_theta) with
-        s = sqrt(diag(L L^T)).  The ScaleMatvecDiag bijector inside the
-        TransformedDistribution handles the L <-> rho_chol Jacobian.
+        The flat vector contains [mu, L_flat, eta] where eta ~ N(0, I).
+        Reconstructs log_theta = mu + L @ eta and evaluates the centered
+        prior, then corrects for:
 
-        Only the flat -> L Jacobian (exp of log-diagonal) is added here.
+        1. Non-centered reparameterization: +S * log|det(L)| converts MVN(log_theta)
+           to N(eta|0,I) (the |det(L)|^S from the change of variables cancels with
+           the MVN normalization).
+        2. ScaleMatvecDiag Jacobian overcounting: TFP computes the Jacobian as if L
+           is a full P×P matrix, but only P(P+1)/2 lower-triangular elements are free.
+           The excess is -sum_i (P-1-i)*log(s_i) which biases toward smaller s.
+        3. Flat parameterization Jacobian: +sum(log(diag(L))) for the exp transform
+           on the stored log-diagonal of L.
         """
         sample = flat_to_prior_sample(x, num_subjects, P)
         mu = sample['mu']
         L = sample['L']
-        log_theta = sample['log_theta']
+        log_theta = sample['log_theta']  # reconstructed: mu + L @ eta
 
-        # Prior log-density in (L, mu, log_theta) space (includes L -> (rho_chol, s) Jacobian)
-        lp = prior.log_prob(L, mu, log_theta).sum()
+        # Centered prior log-density (includes L -> (rho_chol, s) Jacobian via TFP)
+        lp = prior.log_prob(L, mu, log_theta)
 
-        # Jacobian: flat (log-diag) -> L (exp transform on diagonal)
+        # Correction 1: MVN -> N(0,I) adds +log|det(L)| per subject
+        lp += num_subjects * jnp.sum(jnp.log(jnp.diag(L)))
+
+        # Correction 2: ScaleMatvecDiag Jacobian overcounting
+        # TFP uses -P*sum(log(s_i)) but correct for Cholesky is -sum_i (i+1)*log(s_i)
+        # Subtract the excess: +sum_i (P-1-i)*log(s_i)
+        s = jnp.sqrt(jnp.diag(L @ L.T))
+        cholesky_jac_correction = jnp.sum(jnp.arange(P - 1, -1, -1) * jnp.log(s))
+        lp += cholesky_jac_correction
+
+        # Correction 3: flat (log-diag) -> L (exp transform on diagonal)
         lp += jnp.sum(jnp.log(jnp.diag(L)))
 
         return lp
 
-    def recover_population(sampling_key, data, mask, create_likelihood_fun):
+    def nc_to_centered(x):
+        """Transform flat vector from non-centered [mu, L_flat, eta] to centered [mu, L_flat, log_theta]."""
+        sample = flat_to_prior_sample(x, num_subjects, P)
+        log_theta = sample['log_theta']  # mu + L @ eta
+        return jnp.concatenate([x[:num_pop_params], log_theta.ravel()])
+
+    def recover_population(sampling_key, data, mask, create_likelihood_fun, init_position):
         """Run tempered SMC to recover hierarchical parameters for one population."""
-        log_likelihood_fn = create_likelihood_fun(data, mask)
+        centered_ll_fn = create_likelihood_fun(data, mask)
+
+        # Wrap the centered likelihood to accept non-centered parameterization
+        def log_likelihood_fn(x):
+            return centered_ll_fn(nc_to_centered(x))
+
+        def logdensity_fn(x):
+            return log_prior_fn(x) + log_likelihood_fn(x)
+
+        # Run window adaptation to find good HMC parameters
+        sampling_key, warmup_key = jax.random.split(sampling_key)
+        _, _, adapted_params = warmup(
+            blackjax.nuts,
+            logdensity_fn,
+            init_position,
+            smc_cfg["num_warmup"],
+            warmup_key,
+        )
+        logger.info(
+            "Adapted step size: %s", adapted_params["step_size"],
+        )
 
         hmc_parameters = dict(
-            step_size=smc_cfg["step_size"],
-            inverse_mass_matrix=jnp.ones(num_pop_params + num_subjects * P),
+            step_size=adapted_params["step_size"],
+            inverse_mass_matrix=adapted_params["inverse_mass_matrix"],
             num_integration_steps=smc_cfg["num_integration_steps"],
         )
 
@@ -266,6 +324,9 @@ def main(cfg):
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
+        # Build initial position from true params (used for warmup adaptation)
+        init_position = context_to_flat(context)
+
         # Save true parameters
         pop_params_true, subj_params_true = context_to_true_params(context)
 
@@ -274,7 +335,7 @@ def main(cfg):
         sampling_key, approx_key = jax.random.split(sampling_key)
 
         final_state, state_history, n_iter = recover_population(
-            approx_key, data, mask, likelihood_factory_approx,
+            approx_key, data, mask, likelihood_factory_approx, init_position,
         )
         logger.info("SMC converged in %s iterations", n_iter)
 
@@ -301,7 +362,7 @@ def main(cfg):
                 num_params=P, num_pop_params=num_pop_params,
             )
             final_state_ref, _, n_iter_ref = recover_population(
-                ref_key, data, mask, ref_likelihood,
+                ref_key, data, mask, ref_likelihood, init_position,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
             pop_results[f"pop{pop_idx}_particles_ref"] = np.asarray(final_state_ref.particles)
