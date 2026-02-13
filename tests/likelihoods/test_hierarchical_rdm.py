@@ -10,7 +10,14 @@ from confrdm_jax.likelihoods import (
 
 
 NUM_PARAMS = 5
-NUM_POP_PARAMS = 8  # 2+2+1+1+2 for truncnorm/gamma/truncnorm groups
+P = 5
+# MVN prior layout: log_psi (5) + mu (5) + L_flat (15) = 25 population params
+NUM_PSI = P
+NUM_MU = P
+NUM_L_DIAG = P
+NUM_L_OFFDIAG = P * (P - 1) // 2
+NUM_L_PARAMS = NUM_L_DIAG + NUM_L_OFFDIAG
+NUM_POP_PARAMS = NUM_PSI + NUM_MU + NUM_L_PARAMS  # 5 + 5 + 15 = 25
 
 
 def _make_synthetic_data(key, num_subjects=3, trial_counts=None):
@@ -41,29 +48,28 @@ def _make_synthetic_data(key, num_subjects=3, trial_counts=None):
 
 
 def _make_param_vector(key, num_subjects=3):
-    """Create a plausible hierarchical parameter vector in log-space.
+    """Create a plausible hierarchical parameter vector.
 
-    Layout: [mu_v_int, sigma_v_int, mu_v_slope, sigma_v_slope,
-             scale_s_true, scale_b, mu_t0, sigma_t0,
-             subj_0_p0, ..., subj_S_pP]
+    Layout for MVN prior: [log_psi (5), mu (5), log_diag_L (5), offdiag_L (10), log_theta (S*5)]
     """
-    # Population params (8 values): matching the prior group structure
-    # Truncated normal groups: (mu, sigma), Gamma groups: (scale,)
-    pop_params = jnp.array([
-        1.0, 0.1,    # v_intercept: mu, sigma
-        1.5, 0.2,    # v_slope: mu, sigma
-        1.2,         # s_true: scale
-        1.2,         # b: scale
-        0.3, 0.05,   # t0: mu, sigma
-    ])
+    k1, k2 = jax.random.split(key)
 
-    # Subject params drawn near reasonable values
-    pop_mu = jnp.array([1.0, 1.5, 1.2, 1.2, 0.3])
-    subj_params = jnp.tile(pop_mu, (num_subjects, 1))
-    subj_params = subj_params + 0.05 * jax.random.normal(key, (num_subjects, NUM_PARAMS))
-    subj_params = jnp.maximum(subj_params, 0.01)  # keep positive before log
+    # InverseGamma scale params (log-transformed for positivity)
+    log_psi = jnp.zeros(NUM_PSI)  # psi = 1.0
 
-    x = jnp.concatenate([jnp.log(pop_params), jnp.log(subj_params.ravel())])
+    # Population mean (unconstrained, in log-space for positive params)
+    mu = jnp.array([0.0, 0.4, 0.2, 0.2, -1.2])  # log of [1.0, 1.5, 1.2, 1.2, 0.3]
+
+    # Cholesky factor: log-diagonal + off-diagonal
+    log_diag_L = jnp.array([-0.5, -0.5, -0.5, -0.5, -0.5])  # small variances
+    offdiag_L = jnp.zeros(NUM_L_OFFDIAG)  # no correlations for simplicity
+    L_flat = jnp.concatenate([log_diag_L, offdiag_L])
+
+    # Subject params in log-space (log_theta)
+    log_theta = jnp.tile(mu, (num_subjects, 1))
+    log_theta = log_theta + 0.05 * jax.random.normal(k1, (num_subjects, NUM_PARAMS))
+
+    x = jnp.concatenate([log_psi, mu, L_flat, log_theta.ravel()])
     return x
 
 

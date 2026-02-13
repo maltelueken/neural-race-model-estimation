@@ -7,7 +7,7 @@ from confrdm_jax.flows import evaluate_pdf_sf
 from .rdm import inv_gauss_log_pdf_sf
 
 
-def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=8):
+def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=25):
     """Hierarchical analytical likelihood for multi-subject RDM.
 
     Args:
@@ -56,7 +56,7 @@ def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=
     return likelihood_fun
 
 
-def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5, num_pop_params=8):
+def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5, num_pop_params=25):
     """Factory for hierarchical neural-approximate likelihood for multi-subject RDM.
 
     Args:

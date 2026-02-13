@@ -50,8 +50,15 @@ mcmc:
 # Hierarchical recovery settings
 hierarchical_recovery:
   num_subjects: 10
+  num_params: 5
   test_num_populations: 1
   test_num_obs_per_subject: 500
+
+  prior:
+    lkj_concentration: 2.0
+    halfnormal_scale: [0.1, 0.1, 0.1, 0.1, 0.1]
+    mu_loc: [-0.2, 0.6, 0.3, 0.5, -1.8]
+    mu_scale: [0.5, 0.5, 0.5, 0.5, 2.0]
 
   mcmc:
     num_warmup: 500

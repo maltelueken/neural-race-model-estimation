@@ -1,5 +1,6 @@
 
 import logging
+from functools import partial
 from pathlib import Path
 
 import blackjax
@@ -8,125 +9,128 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from tensorflow_probability.substrates.jax import distributions as tfd
-
 from confrdm.data import save_hdf5
+from confrdm_jax.distributions import (
+    cholesky_to_flat,
+    flat_to_cholesky,
+)
 from confrdm_jax.flows import load_conditioner
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood
 from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood_factory_approx
 from confrdm_jax.mcmc import inference_loop_multiple_chains
 from confrdm_jax.mcmc import warmup
-from confrdm_jax.simulators import create_rdm_hierarchical_prior
-from confrdm_jax.simulators import sample_conditional_rdm_hierarchical
+from confrdm_jax.simulators import create_hierarchical_rdm_prior_lkj_mvn
+from confrdm_jax.simulators import sample_conditional_rdm_hierarchical_lkj_mvn
 
 logger = logging.getLogger(__name__)
 
 logging.getLogger("absl").setLevel(logging.ERROR)
 
-NUM_RDM_PARAMS = 5
-
-# The hierarchical prior sample has 5 parameter groups:
-#   v_intercept: (mu, sigma, subjects)    - truncated normal, 2 pop scalars
-#   v_slope:     (mu, sigma, subjects)    - truncated normal, 2 pop scalars
-#   s_true:      (scale, subjects)        - gamma, 1 pop scalar
-#   b:           (scale, subjects)        - gamma, 1 pop scalar
-#   t0:          (mu, sigma, subjects)    - truncated normal, 2 pop scalars
-# Total pop scalars: 8
-#
-# The flat MCMC vector layout (no padding):
-#   [pop_0, pop_1, ..., pop_7, subj_0_p0, subj_0_p1, ..., subj_S_pP]
-
-GROUP_POP_SIZES = [2, 2, 1, 1, 2]  # actual pop scalars per group
-NUM_POP_PARAMS = sum(GROUP_POP_SIZES)  # 8
-
-# Hyperprior config matching create_rdm_hierarchical_prior.
-# Each entry: ("truncated_normal", (hyper_mu_mu, hyper_mu_s, hyper_s))
-#          or ("gamma", (hyper_s_mu, hyper_s_s, gamma_shape))
-HYPERPRIOR_CONFIG = [
-    ("truncated_normal", (1.0, 0.25, 0.5)),   # v_intercept
-    ("truncated_normal", (2.5, 0.25, 0.5)),    # v_slope
-    ("gamma", (0.1, 0.05, 12.0)),              # s_true
-    ("gamma", (0.15, 0.05, 8.0)),              # b
-    ("truncated_normal", (0.3, 0.2, 0.1)),     # t0
-]
-
-
-def truncnorm_logpdf(x, loc, scale):
-    """Log-density of TruncatedNormal(loc, scale, low=0, high=inf).
-
-    TFP's TruncatedNormal.log_prob has broken gradients w.r.t. scale,
-    so we implement it manually using jax.scipy.stats.norm.
-    """
-    z = (x - loc) / scale
-    log_pdf = jax.scipy.stats.norm.logpdf(z) - jnp.log(scale)
-    log_normalizer = jax.scipy.stats.norm.logcdf(loc / scale)
-    return log_pdf - log_normalizer
+# jax.config.update('jax_enable_x64', True)
 
 
 def context_to_flat(context):
-    """Convert hierarchical prior sample to flat vector for MCMC.
+    """Convert LKJ-MVN hierarchical prior sample (dict) to flat vector for MCMC.
 
-    Returns a vector of length NUM_POP_PARAMS + S*P in natural (not log) space.
-    Pop scalars are packed without padding (8 values for RDM).
+    Layout: [mu (P), log_diag_L (P), offdiag_L (P*(P-1)/2), log_theta (S*P)]
+
+    Args:
+        context: Dictionary from create_rdm_hierarchical_lkj_mvn_prior.
+
+    Returns:
+        Flat vector of length NUM_POP_PARAMS + S*P.
     """
-    pop_scalars = []
-    subj_columns = []
+    mu = context['mu']  # (P,)
+    L = context['L']    # (P, P)
+    log_theta = context['log_theta']  # (S, P)
 
-    for group in context:
-        for scalar in group[:-1]:
-            pop_scalars.append(scalar)
-        subj_columns.append(group[-1])
+    # Flatten Cholesky factor
+    L_flat = cholesky_to_flat(L)  # [log_diag, offdiag]
 
-    pop = jnp.array(pop_scalars)  # length 8
-    subj = jnp.stack(subj_columns, axis=-1)  # (S, P)
-
-    return jnp.concatenate([pop, subj.ravel()])
+    return jnp.concatenate([mu, L_flat, log_theta.ravel()])
 
 
-def flat_to_prior_sample(x, num_subjects):
-    """Convert flat parameter vector back to nested prior sample structure.
+def flat_to_prior_sample(x, num_subjects, P):
+    """Convert flat parameter vector back to prior sample structure.
 
     Inverse of context_to_flat.
+
+    Args:
+        x: Flat vector of length NUM_POP_PARAMS + S*P.
+        num_subjects: Number of subjects S.
+        P: Number of per-subject parameters.
+
+    Returns:
+        Dictionary with keys: 'mu', 'L', 'Sigma', 'log_theta', 'theta'.
     """
-    pop = x[:NUM_POP_PARAMS]
-    subj = x[NUM_POP_PARAMS:].reshape(num_subjects, NUM_RDM_PARAMS)
+    num_pop_params = P + P + P * (P - 1) // 2
+    mu = x[:P]
+    L_flat = x[P:num_pop_params]
+    log_theta = x[num_pop_params:].reshape(num_subjects, P)
 
-    sample = []
-    pop_idx = 0
-    for param_idx, num_pop in enumerate(GROUP_POP_SIZES):
-        group = [pop[pop_idx + i] for i in range(num_pop)]
-        group.append(subj[:, param_idx])
-        sample.append(group)
-        pop_idx += num_pop
+    L = flat_to_cholesky(L_flat, P)
+    Sigma = L @ L.T
+    theta = jnp.exp(log_theta)
 
-    return sample
+    return {
+        'mu': mu,
+        'L': L,
+        'Sigma': Sigma,
+        'log_theta': log_theta,
+        'theta': theta,
+    }
 
 
 def context_to_true_params(context):
     """Extract true parameters from context for saving.
 
+    Args:
+        context: Dictionary from create_rdm_hierarchical_lkj_mvn_prior.
+
     Returns:
-        pop_params: 1-D array of all population-level scalars (8 values).
-        subj_params: (S, P) array of subject-level parameters.
+        Tuple of (pop_params, subj_params):
+            pop_params: Dictionary with 'mu', 'L', 'Sigma', 'rho', 's'.
+            subj_params: (S, P) array of subject-level parameters in natural space.
     """
-    pop_scalars = []
-    subj_columns = []
-
-    for group in context:
-        for scalar in group[:-1]:
-            pop_scalars.append(float(scalar))
-        subj_columns.append(group[-1])
-
-    subj = jnp.stack(subj_columns, axis=-1)
-    return np.array(pop_scalars), np.asarray(subj)
+    pop_params = {
+        'mu': np.asarray(context['mu']),
+        'L': np.asarray(context['L']),
+        'Sigma': np.asarray(context['Sigma']),
+        'rho': np.asarray(context['rho']),
+        's': np.asarray(context['s']),
+    }
+    subj_params = np.asarray(context['theta'])
+    return pop_params, subj_params
 
 
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
-    num_subjects = cfg["hierarchical_recovery"]["num_subjects"]
-    num_trials = cfg["hierarchical_recovery"]["test_num_obs_per_subject"]
-    num_populations = cfg["hierarchical_recovery"]["test_num_populations"]
+    hier_cfg = cfg["hierarchical_recovery"]
+    num_subjects = hier_cfg["num_subjects"]
+    num_trials = hier_cfg["test_num_obs_per_subject"]
+    num_populations = hier_cfg["test_num_populations"]
+    P = hier_cfg["num_params"]
+
+    # Derived constants
+    num_L_params = P + P * (P - 1) // 2
+    num_pop_params = P + num_L_params
+
+    # Prior hyperparameters from config
+    prior_cfg = hier_cfg["prior"]
+    lkj_concentration = float(prior_cfg["lkj_concentration"])
+    halfnormal_scale = jnp.array(prior_cfg["halfnormal_scale"])
+    mu_loc = jnp.array(prior_cfg["mu_loc"])
+    mu_scale = jnp.array(prior_cfg["mu_scale"])
+
+    # Build CholeskyLKJ-MVN prior distribution
+    prior = create_hierarchical_rdm_prior_lkj_mvn(
+        num_subjects,
+        lkj_concentration=lkj_concentration,
+        halfnormal_scale=halfnormal_scale,
+        mu_loc=mu_loc,
+        mu_scale=mu_scale,
+    )
 
     # Load conditioner
     train_key = jax.random.key(cfg["train_seed"])
@@ -145,38 +149,33 @@ def main(cfg):
     conditioner = load_conditioner(conditioner, conditioner_path)
     conditioner.eval()
 
-    # Create hierarchical prior and likelihood factory
-    prior = create_rdm_hierarchical_prior(num_subjects)
-    likelihood_factory_approx = create_rdm_hierarchical_likelihood_factory_approx(conditioner)
+    # Create likelihood factories with correct num_pop_params
+    likelihood_factory_approx = create_rdm_hierarchical_likelihood_factory_approx(
+        conditioner, num_params=P, num_pop_params=num_pop_params,
+    )
 
-    mcmc_cfg = cfg["hierarchical_recovery"]["mcmc"]
+    mcmc_cfg = hier_cfg["mcmc"]
 
     def log_prior(x):
-        """Log-prior on the flat MCMC vector (log-space).
+        """Log-prior on the flat MCMC vector using CholeskyLKJ-MVN prior.
 
-        Evaluates each hyperprior group manually using truncnorm_logpdf to avoid
-        NaN gradients from TFP's TruncatedNormal.log_prob w.r.t. scale.
-        Includes the Jacobian correction for the exp transform.
+        Uses HierarchicalRDMPriorLKJMVN.log_prob(L, mu, log_theta) which
+        evaluates the joint distribution at (s, L, mu, log_theta) with
+        s = sqrt(diag(L L^T)).  The ScaleMatvecDiag bijector inside the
+        TransformedDistribution handles the L <-> rho_chol Jacobian.
+
+        Only the flat -> L Jacobian (exp of log-diagonal) is added here.
         """
-        x_natural = jnp.exp(x)
-        sample = flat_to_prior_sample(x_natural, num_subjects)
+        sample = flat_to_prior_sample(x, num_subjects, P)
+        mu = sample['mu']
+        L = sample['L']
+        log_theta = sample['log_theta']
 
-        lp = jnp.float32(0.0)
-        for group, (group_type, hyperparams) in zip(sample, HYPERPRIOR_CONFIG):
-            if group_type == "truncated_normal":
-                mu, sigma, subjects = group
-                hyper_mu_mu, hyper_mu_s, hyper_s = hyperparams
-                lp += truncnorm_logpdf(mu, hyper_mu_mu, hyper_mu_s)
-                lp += tfd.HalfNormal(hyper_s).log_prob(sigma)
-                lp += jnp.sum(truncnorm_logpdf(subjects, mu, sigma))
-            else:
-                scale, subjects = group
-                hyper_s_mu, hyper_s_s, gamma_shape = hyperparams
-                lp += truncnorm_logpdf(scale, hyper_s_mu, hyper_s_s)
-                lp += jnp.sum(tfd.Gamma(gamma_shape, 1.0 / scale).log_prob(subjects))
+        # Prior log-density in (L, mu, log_theta) space (includes L -> (rho_chol, s) Jacobian)
+        lp = prior.log_prob(L, mu, log_theta).sum()
 
-        # Jacobian correction for log-space parameterization: |d(exp(x))/dx| = exp(x)
-        # lp += jnp.sum(x)
+        # Jacobian: flat (log-diag) -> L (exp transform on diagonal)
+        lp += jnp.sum(jnp.log(jnp.diag(L)))
 
         return lp
 
@@ -204,7 +203,7 @@ def main(cfg):
             sampling_key, kernel, last_states, mcmc_cfg["num_sampling"], num_chains,
         )
 
-        return jnp.exp(trace.position)
+        return trace.position
 
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
@@ -215,16 +214,21 @@ def main(cfg):
 
         test_key, data_key, sampling_key = jax.random.split(test_key, 3)
 
-        # Simulate hierarchical data
-        data, context = sample_conditional_rdm_hierarchical(data_key, num_trials, prior)
+        # Simulate hierarchical data using LKJ-MVN prior
+        data, context = sample_conditional_rdm_hierarchical_lkj_mvn(
+            data_key, num_trials, num_subjects,
+            lkj_concentration=lkj_concentration,
+            halfnormal_scale=halfnormal_scale,
+            mu_loc=mu_loc,
+            mu_scale=mu_scale,
+        )
         logger.info("Simulated data shape: %s", data.shape)
 
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
-        # Build initial position from true params (in log-space)
-        true_flat = context_to_flat(context)
-        init_position = jnp.log(jnp.maximum(true_flat, 1e-6))
+        # Build initial position from true params
+        init_position = context_to_flat(context)
 
         # Save true parameters
         pop_params_true, subj_params_true = context_to_true_params(context)
@@ -239,11 +243,17 @@ def main(cfg):
         samples_approx.block_until_ready()
         logger.info("Approx samples shape: %s", samples_approx.shape)
 
+        # Convert samples to interpretable form
+        # samples_approx has shape (num_chains, num_samples, num_params)
         pop_results = {
             f"pop{pop_idx}_samples_approx": np.asarray(samples_approx),
             f"pop{pop_idx}_data": np.asarray(data),
-            f"pop{pop_idx}_pop_params_true": pop_params_true,
-            f"pop{pop_idx}_subj_params_true": np.asarray(subj_params_true),
+            f"pop{pop_idx}_pop_mu_true": pop_params_true['mu'],
+            f"pop{pop_idx}_pop_L_true": pop_params_true['L'],
+            f"pop{pop_idx}_pop_Sigma_true": pop_params_true['Sigma'],
+            f"pop{pop_idx}_pop_rho_true": pop_params_true['rho'],
+            f"pop{pop_idx}_pop_s_true": pop_params_true['s'],
+            f"pop{pop_idx}_subj_params_true": subj_params_true,
         }
 
         # Reference recovery (optional)
@@ -251,8 +261,12 @@ def main(cfg):
             logger.info("Running reference recovery...")
             sampling_key, ref_key = jax.random.split(sampling_key)
 
+            ref_likelihood = partial(
+                create_rdm_hierarchical_likelihood,
+                num_params=P, num_pop_params=num_pop_params,
+            )
             samples_ref = recover_population(
-                ref_key, data, mask, create_rdm_hierarchical_likelihood, init_position,
+                ref_key, data, mask, ref_likelihood, init_position,
             )
             samples_ref.block_until_ready()
             logger.info("Ref samples shape: %s", samples_ref.shape)
