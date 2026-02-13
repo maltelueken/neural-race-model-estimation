@@ -28,7 +28,7 @@ def inv_gauss_logsf(t, mu, lam):
 @jax.jit
 def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
     rt = rt - t0
-    rt = jnp.maximum(0.0, rt)
+    rt = jnp.maximum(1e-10, rt)
 
     # mu_winner = b/drift_winner
     mu = b/v

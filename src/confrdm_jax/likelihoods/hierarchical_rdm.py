@@ -69,7 +69,7 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5,
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
         rt = rt - t0
-        rt = jnp.maximum(0.0, rt)
+        rt = jnp.maximum(1e-10, rt)
         return evaluate_pdf_sf(conditioner, rt, jnp.array([v, s, b]))
 
     def create_likelihood(data, mask):
