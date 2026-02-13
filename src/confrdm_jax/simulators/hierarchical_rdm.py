@@ -38,42 +38,32 @@ class HierarchicalRDMPriorLKJMVN:
     ):
         self.P = 5
         P = self.P
-        if halfnormal_scale is None:
-            halfnormal_scale = jnp.array([0.1, 0.1, 0.1, 0.1, 0.1])
-        else:
-            halfnormal_scale = jnp.asarray(halfnormal_scale)
-        if mu_loc is None:
-            mu_loc = jnp.array([-0.2, 0.6, 0.3, 0.5, -1.8])
-        else:
-            mu_loc = jnp.asarray(mu_loc)
-        if mu_scale is None:
-            mu_scale = jnp.array([0.5, 0.5, 0.5, 0.5, 2.0])
-        else:
-            mu_scale = jnp.asarray(mu_scale)
+        halfnormal_scale = jnp.asarray(halfnormal_scale)
+        mu_loc = jnp.asarray(mu_loc)
+        mu_scale = jnp.asarray(mu_scale)
 
         self._halfnormal_scale = halfnormal_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc
         self._mu_scale = mu_scale
 
-        self._joint = tfd.JointDistributionSequential([
-            tfd.HalfNormal(halfnormal_scale),
-            lambda s: tfd.TransformedDistribution(tfd.CholeskyLKJ(P, lkj_concentration), tfb.ScaleMatvecDiag(s)),
-            tfd.Normal(mu_loc, mu_scale),
-            lambda mu, psi: tfd.Sample(
-                tfd.MultivariateNormalTriL(
-                    mu,
-                    scale_tril=psi,
-                ),
-                num_subjects,
-            )
-        ])
+        self._joint = tfd.JointDistributionNamed({
+            # Each parameter in P gets its own HalfNormal scale
+            "s": tfd.Independent(tfd.HalfNormal(scale=halfnormal_scale), reinterpreted_batch_ndims=1),
+            
+            # Each parameter in P gets its own Normal mean
+            "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
+            
+            "psi_raw": tfd.CholeskyLKJ(P, lkj_concentration),
+            
+            "z": tfd.Sample(tfd.Normal(0.0, 1.0), sample_shape=[num_subjects, P])
+        })
 
     def sample(self, seed):
         """Sample from the prior, returning (s, L, mu, log_theta)."""
         return self._joint.sample(seed=seed)
 
-    def log_prob(self, L, mu, log_theta):
+    def log_prob(self, params):
         """Evaluate log-prior density in the (L, mu, log_theta) parameterization.
 
         Derives s = sqrt(diag(L @ L.T)) from L and evaluates the joint
@@ -94,8 +84,7 @@ class HierarchicalRDMPriorLKJMVN:
         -------
         Scalar log-density.
         """
-        s = jnp.sqrt(jnp.diag(L @ L.T))
-        return self._joint.log_prob((s, L, mu, log_theta))
+        return self._joint.log_prob(params)
 
 
 def create_hierarchical_rdm_prior_lkj_mvn(
@@ -146,21 +135,17 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
     #   L: TransformedDist output (P,P) - Cholesky factor L = diag(s) @ rho_chol
     #   mu: Normal output (P,) - population mean
     #   log_theta: MVN output (S,P) - subject params in log space
-    s, L, mu, log_theta = prior.sample(seed=key_context)
+    params = prior.sample(seed=key_context)
 
-    Sigma = L @ L.T
-    rho = jnp.diag(1.0 / s) @ Sigma @ jnp.diag(1.0 / s)
+    # Sigma = L @ L.T
+    # rho = jnp.diag(1.0 / s) @ Sigma @ jnp.diag(1.0 / s)
+    # theta = jnp.exp(log_theta)
+
+    psi = params['s'][:, None] * params['psi_raw']
+    log_theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
     theta = jnp.exp(log_theta)
 
-    context = {
-        'rho': rho,
-        's': s,
-        'mu': mu,
-        'L': L,
-        'Sigma': Sigma,
-        'log_theta': log_theta,
-        'theta': theta,
-    }
+    context = params
 
     v_intercept = theta[:, 0]
     v_slope = theta[:, 1]
