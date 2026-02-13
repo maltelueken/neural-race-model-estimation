@@ -56,9 +56,9 @@ hierarchical_recovery:
 
   prior:
     lkj_concentration: 2.0
-    halfnormal_scale: [0.1, 0.1, 0.1, 0.1, 0.1]
-    mu_loc: [-0.2, 0.6, 0.3, 0.5, -1.8]
-    mu_scale: [0.5, 0.5, 0.5, 0.5, 2.0]
+    halfnormal_scale: [0.5, 0.5, 0.5, 0.5, 0.5]
+    mu_loc: [-0.4, 0.4, -0.2, 0.5, -1.0]
+    mu_scale: [0.5, 0.5, 0.5, 0.5, 0.5]
 
   mcmc:
     num_warmup: 500
