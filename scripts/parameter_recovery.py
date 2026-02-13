@@ -50,7 +50,7 @@ def main(cfg):
     @jax.jit
     def log_prior(x):
         params = jnp.exp(x)
-        return prior.log_prob([params[i] for i in range(params.shape[0])])
+        return prior.log_prob([params[i] for i in range(params.shape[0])]) + jnp.sum(x) # Add the Jacobian of the log-transform
 
     # Generate test data
     test_data, test_context = test_sampler(
