@@ -26,3 +26,28 @@ run_reference_recovery: false
 num_bins: 4
 num_mid: 64
 num_params: 5
+
+hierarchical:
+  num_params: 7
+  prior_factory:
+    _target_: confrdm_jax.simulators.create_hierarchical_crdm_prior_lkj_mvn
+    _partial_: true
+  test_sampler:
+    _target_: confrdm_jax.simulators.sample_conditional_crdm_hierarchical_lkj_mvn
+    _partial_: true
+    dt: 0.001
+    t_max: 4.0
+  likelihood_factory_approx:
+    _target_: confrdm_jax.likelihoods.create_crdm_hierarchical_likelihood_factory_approx
+    _partial_: true
+  prior:
+    lkj_concentration: 2.0
+    halfnormal_scale: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
+    percentile_interval:
+      - [0.5, 1.5]    # v_c_intercept
+      - [1.0, 4.0]    # v_c_slope
+      - [0.1, 0.5]    # amp
+      - [0.05, 0.2]   # tau
+      - [0.5, 1.5]    # s_true
+      - [0.5, 2.5]    # b
+      - [0.1, 0.5]    # t0

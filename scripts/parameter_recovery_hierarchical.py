@@ -6,24 +6,18 @@ from pathlib import Path
 import blackjax
 import blackjax.smc.resampling as resampling
 import hydra
+from hydra.utils import instantiate
 import jax
 import jax.flatten_util as jfu
 import jax.numpy as jnp
 import numpy as np
 from blackjax.smc import extend_params
 from flax import nnx
+from omegaconf import OmegaConf
 from tensorflow_probability.substrates.jax import bijectors as tfb
 from confrdm.data import save_hdf5
-from confrdm_jax.distributions import (
-    cholesky_to_flat,
-    flat_to_cholesky,
-)
 from confrdm_jax.flows import load_conditioner
 from confrdm_jax.flows import make_mlp_conditioner
-from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood
-from confrdm_jax.likelihoods import create_rdm_hierarchical_likelihood_factory_approx
-from confrdm_jax.simulators import create_hierarchical_rdm_prior_lkj_mvn
-from confrdm_jax.simulators import sample_conditional_rdm_hierarchical_lkj_mvn
 from confrdm_jax.mcmc import warmup
 from confrdm_jax.smc import smc_inference_loop
 
@@ -34,90 +28,6 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 jax.config.update('jax_enable_x64', True)
 
 
-def context_to_flat(context):
-    """Convert LKJ-MVN hierarchical prior sample (dict) to flat vector (non-centered).
-
-    Layout: [mu (P), log_diag_L (P), offdiag_L (P*(P-1)/2), eta (S*P)]
-
-    Uses non-centered parameterization: eta = L^{-1} @ (log_theta - mu) so that
-    log_theta = mu + L @ eta, where eta ~ N(0, I).
-
-    Args:
-        context: Dictionary from create_rdm_hierarchical_lkj_mvn_prior.
-
-    Returns:
-        Flat vector of length NUM_POP_PARAMS + S*P.
-    """
-    mu = context['mu']  # (P,)
-    L = context['L']    # (P, P)
-    log_theta = context['log_theta']  # (S, P)
-
-    # Flatten Cholesky factor
-    L_flat = cholesky_to_flat(L)  # [log_diag, offdiag]
-
-    # Non-centered: eta = L^{-1} @ (log_theta - mu) for each subject
-    eta = jax.scipy.linalg.solve_triangular(L, (log_theta - mu).T, lower=True).T  # (S, P)
-
-    return jnp.concatenate([mu, L_flat, eta.ravel()])
-
-
-def flat_to_prior_sample(x, num_subjects, P):
-    """Convert flat parameter vector back to prior sample structure (non-centered).
-
-    Inverse of context_to_flat. Reconstructs log_theta = mu + L @ eta.
-
-    Args:
-        x: Flat vector of length NUM_POP_PARAMS + S*P.
-        num_subjects: Number of subjects S.
-        P: Number of per-subject parameters.
-
-    Returns:
-        Dictionary with keys: 'mu', 'L', 'Sigma', 'eta', 'log_theta', 'theta'.
-    """
-    num_pop_params = P + P + P * (P - 1) // 2
-    mu = x[:P]
-    L_flat = x[P:num_pop_params]
-    eta = x[num_pop_params:].reshape(num_subjects, P)
-
-    L = flat_to_cholesky(L_flat, P)
-    Sigma = L @ L.T
-
-    # Non-centered: log_theta = mu + L @ eta
-    log_theta = mu + (eta @ L.T)  # (S, P) = (S, P) + (S, P) @ (P, P)
-    theta = jnp.exp(log_theta)
-
-    return {
-        'mu': mu,
-        'L': L,
-        'Sigma': Sigma,
-        'eta': eta,
-        'log_theta': log_theta,
-        'theta': theta,
-    }
-
-
-def context_to_true_params(context):
-    """Extract true parameters from context for saving.
-
-    Args:
-        context: Dictionary from create_rdm_hierarchical_lkj_mvn_prior.
-
-    Returns:
-        Tuple of (pop_params, subj_params):
-            pop_params: Dictionary with 'mu', 'L', 'Sigma', 'rho', 's'.
-            subj_params: (S, P) array of subject-level parameters in natural space.
-    """
-    pop_params = {
-        'mu': np.asarray(context['mu']),
-        'L': np.asarray(context['L']),
-        'Sigma': np.asarray(context['Sigma']),
-        'rho': np.asarray(context['rho']),
-        's': np.asarray(context['s']),
-    }
-    subj_params = np.asarray(context['theta'])
-    return pop_params, subj_params
-
-
 def sample_prior_particles(prior, bijector, num_particles, rng_key):
     """Draw particles from the hierarchical prior in unconstrained flat space.
 
@@ -125,7 +35,7 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
     and ravels each sample to a flat vector.
 
     Args:
-        prior: HierarchicalRDMPriorLKJMVN instance.
+        prior: Hierarchical prior instance.
         bijector: TFP JointMap bijector (constrained <-> unconstrained).
         num_particles: Number of particles to draw.
         rng_key: JAX PRNG key.
@@ -147,30 +57,29 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="config")
 def main(cfg):
     hier_cfg = cfg["hierarchical_recovery"]
+    model_cfg = cfg["model"]
+    model_hier_cfg = model_cfg["hierarchical"]
+
     num_subjects = hier_cfg["num_subjects"]
     num_trials = hier_cfg["test_num_obs_per_subject"]
     num_populations = hier_cfg["test_num_populations"]
-    P = hier_cfg["num_params"]
+
+    num_params = model_hier_cfg["num_params"]
 
     # Derived constants
-    num_L_params = P + P * (P - 1) // 2
-    num_pop_params = P + num_L_params
+    num_L_params = num_params + num_params * (num_params - 1) // 2
+    num_pop_params = num_params + num_L_params
 
-    # Prior hyperparameters from config
-    prior_cfg = hier_cfg["prior"]
-    lkj_concentration = float(prior_cfg["lkj_concentration"])
-    halfnormal_scale = jnp.array(prior_cfg["halfnormal_scale"])
-    mu_loc = jnp.array(prior_cfg["mu_loc"])
-    mu_scale = jnp.array(prior_cfg["mu_scale"])
+    # Prior hyperparameters from model-specific config
+    prior_cfg = OmegaConf.to_container(model_hier_cfg["prior"], resolve=True)
+
+    # Instantiate model-specific functions from config _target_ entries
+    prior_factory = instantiate(model_hier_cfg["prior_factory"])
+    sampler = instantiate(model_hier_cfg["test_sampler"])
+    likelihood_factory_fn = instantiate(model_hier_cfg["likelihood_factory_approx"])
 
     # Build CholeskyLKJ-MVN prior distribution
-    prior = create_hierarchical_rdm_prior_lkj_mvn(
-        num_subjects,
-        lkj_concentration=lkj_concentration,
-        halfnormal_scale=halfnormal_scale,
-        mu_loc=mu_loc,
-        mu_scale=mu_scale,
-    )
+    prior = prior_factory(num_subjects, **prior_cfg)
 
     # Load conditioner
     train_key = jax.random.key(cfg["train_seed"])
@@ -178,9 +87,9 @@ def main(cfg):
 
     rngs = nnx.Rngs(default=conditioner_key)
     conditioner = make_mlp_conditioner(
-        num_in=cfg["model"]["num_params"],
-        num_bins=cfg["model"]["num_bins"],
-        num_mid=cfg["model"]["num_mid"],
+        num_in=model_cfg["num_params"],
+        num_bins=model_cfg["num_bins"],
+        num_mid=model_cfg["num_mid"],
         rngs=rngs,
     )
 
@@ -189,9 +98,9 @@ def main(cfg):
     conditioner = load_conditioner(conditioner, conditioner_path)
     conditioner.eval()
 
-    # Create likelihood factories with correct num_pop_params
-    likelihood_factory_approx = create_rdm_hierarchical_likelihood_factory_approx(
-        conditioner, num_params=P, num_pop_params=num_pop_params,
+    # Create likelihood factory
+    likelihood_factory_approx = likelihood_factory_fn(
+        conditioner, num_params=num_params, num_pop_params=num_pop_params,
     )
 
     smc_cfg = hier_cfg["smc"]
@@ -215,7 +124,7 @@ def main(cfg):
         likelihood_fun = create_likelihood_fun(data, mask)
 
         # Wrap the centered likelihood to accept non-centered parameterization
-        def likelihood_fun_wrapped(flat_params):
+        def log_likelihood_fn_wrapped(flat_params):
             unconstrained_params_dict = unravel_fn(flat_params)
             params = bijector.forward(unconstrained_params_dict)
             # Non-centered reconstruction logic
@@ -224,13 +133,13 @@ def main(cfg):
             return jnp.sum(likelihood_fun(theta))
 
         def logdensity_fn(params):
-            return log_prior_fn(params) + likelihood_fun_wrapped(params)
+            return log_prior_fn(params) + log_likelihood_fn_wrapped(params)
 
         # Run window adaptation to find good HMC parameters
         sampling_key, warmup_key = jax.random.split(sampling_key)
         _, _, adapted_params = warmup(
             blackjax.nuts,
-            logdensity_fn,
+            logdensity_fn,  # Requires logdensity = logprior + loglikelihood
             init_position,
             smc_cfg["num_warmup"],
             warmup_key,
@@ -247,7 +156,7 @@ def main(cfg):
 
         tempered = blackjax.adaptive_tempered_smc(
             log_prior_fn,
-            likelihood_fun_wrapped,
+            log_likelihood_fn_wrapped, # Requires only loglikelihood
             blackjax.hmc.build_kernel(),
             blackjax.hmc.init,
             extend_params(hmc_parameters),
@@ -284,12 +193,8 @@ def main(cfg):
         test_key, data_key, sampling_key = jax.random.split(test_key, 3)
 
         # Simulate hierarchical data using LKJ-MVN prior
-        data, context = sample_conditional_rdm_hierarchical_lkj_mvn(
-            data_key, num_trials, num_subjects,
-            lkj_concentration=lkj_concentration,
-            halfnormal_scale=halfnormal_scale,
-            mu_loc=mu_loc,
-            mu_scale=mu_scale,
+        data, context = sampler(
+            data_key, num_trials, num_subjects, **prior_cfg,
         )
         logger.info("Simulated data shape: %s", data.shape)
 
@@ -297,8 +202,6 @@ def main(cfg):
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
         # Build initial position from true params (used for warmup adaptation)
-        init_position = context
-
         init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(context))
 
         # Approximate recovery
@@ -325,9 +228,10 @@ def main(cfg):
             logger.info("Running reference recovery...")
             sampling_key, ref_key = jax.random.split(sampling_key)
 
+            ref_likelihood_fn = instantiate(model_hier_cfg["likelihood_factory_ref"])
             ref_likelihood = partial(
-                create_rdm_hierarchical_likelihood,
-                num_params=P, num_pop_params=num_pop_params,
+                ref_likelihood_fn,
+                num_params=num_params, num_pop_params=num_pop_params,
             )
             final_state_ref, n_iter_ref = recover_population(
                 ref_key, data, mask, ref_likelihood, init_position,

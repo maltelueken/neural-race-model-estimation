@@ -3,99 +3,41 @@ import jax.numpy as jnp
 from tensorflow_probability.substrates.jax import distributions as tfd
 from tensorflow_probability.substrates.jax import bijectors as tfb
 
+from .base import HierarchicalRDMPriorLKJMVN, interval_to_mu_loc_scale
 from .rdm import simulate_rdm
-
-
-class HierarchicalRDMPriorLKJMVN:
-    """Hierarchical LKJ-MVN prior parameterized by (L, mu, log_theta).
-
-    Internally uses CholeskyLKJ, HalfNormal, Normal, and MVN components.
-    The ``log_prob`` method accepts the Cholesky factor of the covariance
-    matrix L (not the separate rho_chol and s), and includes the Jacobian
-    for the L -> (rho_chol, s) decomposition where L = diag(s) @ rho_chol.
-
-    Parameters
-    ----------
-    num_subjects : int
-        Number of subjects.
-    lkj_concentration : float
-        Concentration parameter for CholeskyLKJ.
-    halfnormal_scale : array-like, shape (P,)
-        Scale for HalfNormal prior on standard deviations.
-    mu_loc : array-like, shape (P,)
-        Mean of Normal prior on population mean.
-    mu_scale : array-like, shape (P,)
-        Std dev of Normal prior on population mean.
-    """
-
-    def __init__(
-        self,
-        num_subjects,
-        lkj_concentration=2.0,
-        halfnormal_scale=None,
-        mu_loc=None,
-        mu_scale=None,
-    ):
-        self.P = 5
-        P = self.P
-        halfnormal_scale = jnp.asarray(halfnormal_scale)
-        mu_loc = jnp.asarray(mu_loc)
-        mu_scale = jnp.asarray(mu_scale)
-
-        self._halfnormal_scale = halfnormal_scale
-        self._lkj_concentration = lkj_concentration
-        self._mu_loc = mu_loc
-        self._mu_scale = mu_scale
-
-        self._joint = tfd.JointDistributionNamed({
-            # Each parameter in P gets its own HalfNormal scale
-            "s": tfd.Independent(tfd.HalfNormal(scale=halfnormal_scale), reinterpreted_batch_ndims=1),
-            
-            # Each parameter in P gets its own Normal mean
-            "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
-            
-            "psi_raw": tfd.CholeskyLKJ(P, lkj_concentration),
-            
-            "z": tfd.Sample(tfd.Normal(0.0, 1.0), sample_shape=[num_subjects, P])
-        })
-
-    def sample(self, seed):
-        """Sample from the prior, returning (s, L, mu, log_theta)."""
-        return self._joint.sample(seed=seed)
-
-    def log_prob(self, params):
-        """Evaluate log-prior density in the (L, mu, log_theta) parameterization.
-
-        Derives s = sqrt(diag(L @ L.T)) from L and evaluates the joint
-        distribution at (s, L, mu, log_theta).  The TransformedDistribution
-        component (ScaleMatvecDiag bijector) handles the L <-> rho_chol
-        Jacobian automatically.
-
-        Parameters
-        ----------
-        L : array, shape (P, P)
-            Lower-triangular Cholesky factor of the covariance matrix Sigma.
-        mu : array, shape (P,)
-            Population-level mean.
-        log_theta : array, shape (S, P)
-            Subject-level parameters in log space.
-
-        Returns
-        -------
-        Scalar log-density.
-        """
-        return self._joint.log_prob(params)
 
 
 def create_hierarchical_rdm_prior_lkj_mvn(
     num_subjects,
     lkj_concentration=2.0,
     halfnormal_scale=None,
-    mu_loc=None,
-    mu_scale=None,
+    percentile_interval=None,
 ):
+    """Create a hierarchical RDM prior with LKJ-MVN structure.
+
+    Parameters are log-normally distributed. Supply a 95% credible interval
+    [P2.5, P97.5] on the original (non-log) scale for each of the 5 RDM
+    parameters; the function converts that into Normal hyperparameters
+    (mu_loc, mu_scale) in log-space.
+
+    Parameter order: [v_intercept, v_slope, s_true, b, t0]
+
+    Args:
+        num_subjects: Number of subjects.
+        lkj_concentration: Concentration for CholeskyLKJ prior.
+        halfnormal_scale: array-like, shape (5,). Scale of HalfNormal prior on
+            between-subject standard deviations in log-space.
+        percentile_interval: array-like, shape (5, 2). Each row is [lo, hi] —
+            the 2.5th and 97.5th percentile of the marginal prior on that
+            parameter (on the original, non-log scale).
+
+    Returns:
+        HierarchicalRDMPriorLKJMVN instance.
+    """
+    mu_loc, mu_scale = interval_to_mu_loc_scale(percentile_interval, halfnormal_scale)
     return HierarchicalRDMPriorLKJMVN(
         num_subjects,
+        num_params=5,
         lkj_concentration=lkj_concentration,
         halfnormal_scale=halfnormal_scale,
         mu_loc=mu_loc,
@@ -105,7 +47,7 @@ def create_hierarchical_rdm_prior_lkj_mvn(
 
 def sample_conditional_rdm_hierarchical_lkj_mvn(
     key, num_trials, num_subjects,
-    lkj_concentration=2.0, halfnormal_scale=None, mu_loc=None, mu_scale=None,
+    lkj_concentration=2.0, halfnormal_scale=None, percentile_interval=None,
 ):
     """Sample data from LKJ-MVN hierarchical RDM prior.
 
@@ -114,9 +56,11 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
         num_trials: Number of trials per subject.
         num_subjects: Number of subjects.
         lkj_concentration: LKJ concentration parameter.
-        halfnormal_scale: Scale for HalfNormal prior on std devs (P,).
-        mu_loc: Mean of Normal prior on population mean (P,).
-        mu_scale: Std dev of Normal prior on population mean (P,).
+        halfnormal_scale: Scale for HalfNormal prior on std devs (5,).
+        percentile_interval: array-like, shape (5, 2). Each row is [lo, hi] —
+            the 2.5th and 97.5th percentile of the marginal prior on that
+            parameter (on the original, non-log scale).
+            Parameter order: [v_intercept, v_slope, s_true, b, t0].
 
     Returns:
         Tuple of (data, context):
@@ -127,7 +71,7 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
 
     prior = create_hierarchical_rdm_prior_lkj_mvn(
         num_subjects, lkj_concentration=lkj_concentration,
-        halfnormal_scale=halfnormal_scale, mu_loc=mu_loc, mu_scale=mu_scale,
+        halfnormal_scale=halfnormal_scale, percentile_interval=percentile_interval,
     )
 
     # Joint returns (s, L, mu, log_theta) where:
