@@ -11,6 +11,8 @@ from .crdm_single import create_crdm_single_prior_uniform
 from .crdm_single import sample_conditional_crdm_single
 from .crdm_single import simulate_crdm_single_batch
 from .crdm_single import simulate_crdm_single_dataset
+from .hierarchical_crdm import create_hierarchical_crdm_prior_lkj_mvn
+from .hierarchical_crdm import sample_conditional_crdm_hierarchical_lkj_mvn
 from .hierarchical_rdm import create_hierarchical_rdm_prior_lkj_mvn
 from .hierarchical_rdm import sample_conditional_rdm_hierarchical_lkj_mvn
 from .rdm import create_rdm_prior_informed
@@ -34,6 +36,9 @@ __all__ = [
     "create_rdm_prior_informed",
     "simulate_rdm",
     "sample_conditional_rdm",
+    # Hierarchical CRDM
+    "create_hierarchical_crdm_prior_lkj_mvn",
+    "sample_conditional_crdm_hierarchical_lkj_mvn",
     # Hierarchical RDM
     "create_hierarchical_rdm_prior_lkj_mvn",
     "sample_conditional_rdm_hierarchical_lkj_mvn",
