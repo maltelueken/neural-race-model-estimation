@@ -3,7 +3,11 @@ import jax.numpy as jnp
 from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
+from .rdm import _clamp_log
 from .rdm import inv_gauss_log_pdf_sf
+
+
+_FLOOR = 1e-10
 
 
 def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7, num_pop_params=35):
@@ -19,7 +23,14 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7
     """
     def crdm_log_pdf_sf(rt, v_c, amp, tau, s, b, t0):
         rt = rt - t0
-        rt = jnp.maximum(0.0, rt)
+        rt = jnp.maximum(rt, _FLOOR)
+
+        v_c = jnp.maximum(v_c, _FLOOR)
+        amp = jnp.maximum(amp, _FLOOR)
+        tau = jnp.maximum(tau, _FLOOR)
+        s = jnp.maximum(s, _FLOOR)
+        b = jnp.maximum(b, _FLOOR)
+
         context = jnp.transpose(jnp.array([v_c, jnp.abs(amp), tau, s, b]))
         return evaluate_pdf_sf(conditioner, rt, context)
 
@@ -56,18 +67,23 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7
             # Analytic inverse Gaussian for the other accumulator
             ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt, ig_v_c, ig_s, b, t0)
 
+            # Clamp all log-density outputs upstream to avoid NaN gradient poisoning
+            nn_log_pdf_c = _clamp_log(nn_log_pdf.squeeze())
+            nn_log_sf_c = _clamp_log(nn_log_sf.squeeze())
+            ig_log_pdf_c = _clamp_log(ig_log_pdf.squeeze())
+            ig_log_sf_c = _clamp_log(ig_log_sf.squeeze())
+
             # Result routing
-            log_pdf_true = jnp.where(condition == 1, nn_log_pdf.squeeze(), ig_log_pdf.squeeze())
-            log_sf_false = jnp.where(condition == 1, ig_log_sf.squeeze(), nn_log_sf.squeeze())
-            log_pdf_false = jnp.where(condition == 1, ig_log_pdf.squeeze(), nn_log_pdf.squeeze())
-            log_sf_true = jnp.where(condition == 1, nn_log_sf.squeeze(), ig_log_sf.squeeze())
+            log_pdf_true = jnp.where(condition == 1, nn_log_pdf_c, ig_log_pdf_c)
+            log_sf_false = jnp.where(condition == 1, ig_log_sf_c, nn_log_sf_c)
+            log_pdf_false = jnp.where(condition == 1, ig_log_pdf_c, nn_log_pdf_c)
+            log_sf_true = jnp.where(condition == 1, nn_log_sf_c, ig_log_sf_c)
 
             # Final choice logic
             dens_choice_1 = log_pdf_true + log_sf_false
             dens_choice_0 = log_pdf_false + log_sf_true
 
             ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
-            ll = jnp.where(jnp.isfinite(ll), ll, jnp.log(1e-12))
 
             return jnp.sum(jnp.where(subject_mask, ll, 0.0))
 

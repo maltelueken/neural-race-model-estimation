@@ -1,13 +1,16 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from jax.scipy import stats
 
 from confrdm_jax.flows import evaluate_pdf_sf
+from .rdm import _clamp_log
 from .rdm import inv_gauss_log_pdf_sf
 
 
-def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=25):
+_FLOOR = 1e-10
+
+
+def create_rdm_hierarchical_likelihood(data, mask):
     """Hierarchical analytical likelihood for multi-subject RDM.
 
     Args:
@@ -20,7 +23,6 @@ def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=
         A JIT-compiled function `likelihood_fun(x)` that takes a flat parameter vector
         and returns a scalar total log-likelihood across all subjects and trials.
     """
-    num_subjects = data.shape[0]
 
     def _single_subject_ll(subject_data, subject_mask, subject_params):
         """Compute per-trial log-likelihoods for one subject."""
@@ -38,11 +40,10 @@ def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=
         log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
         log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
 
-        dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
-        dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
+        dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+        dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
 
         ll = jnp.where(choice == 1, dens_true, dens_false)
-        ll = jnp.where(jnp.isfinite(ll), ll, jnp.log(1e-12))
 
         return jnp.sum(jnp.where(subject_mask, ll, 0.0))
 
@@ -56,7 +57,7 @@ def create_rdm_hierarchical_likelihood(data, mask, num_params=5, num_pop_params=
     return likelihood_fun
 
 
-def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5, num_pop_params=25):
+def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
     """Factory for hierarchical neural-approximate likelihood for multi-subject RDM.
 
     Args:
@@ -69,12 +70,15 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5,
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
         rt = rt - t0
-        rt = jnp.maximum(1e-10, rt)
+        rt = jnp.maximum(rt, _FLOOR)
+
+        v = jnp.maximum(v, _FLOOR)
+        s = jnp.maximum(s, _FLOOR)
+        b = jnp.maximum(b, _FLOOR)
+
         return evaluate_pdf_sf(conditioner, rt, jnp.array([v, s, b]))
 
     def create_likelihood(data, mask):
-        num_subjects = data.shape[0]
-
         def _single_subject_ll(subject_data, subject_mask, subject_params):
             """Compute per-trial log-likelihoods for one subject."""
             rt = subject_data[:, 0]
@@ -91,11 +95,10 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, num_params=5,
             log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf_approx(rt, v_true, s_true, b, t0)
             log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf_approx(rt, v_false, s_false, b, t0)
 
-            dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
-            dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
+            dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+            dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
 
             ll = jnp.where(choice == 1, dens_true, dens_false)
-            ll = jnp.where(jnp.isfinite(ll), ll, jnp.log(1e-12))
 
             return jnp.sum(jnp.where(subject_mask, ll, 0.0))
 

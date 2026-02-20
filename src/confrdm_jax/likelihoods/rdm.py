@@ -6,6 +6,19 @@ from jax.scipy import stats
 from confrdm_jax.flows import evaluate_pdf_sf
 
 
+_LOG_FLOOR = jnp.log(1e-12)
+_FLOOR = 1e-10
+
+
+def _clamp_log(x):
+    """Clamp log-densities to a finite floor, avoiding NaN in the computation graph.
+
+    Uses nan_to_num first because jnp.clip propagates NaN (IEEE 754).
+    The gradient of nan_to_num is 0 for NaN inputs, so this is safe for
+    reverse-mode differentiation (HMC / NUTS).
+    """
+    return jnp.maximum(jnp.nan_to_num(x, nan=_LOG_FLOOR), _LOG_FLOOR)
+
 @jax.jit
 def inv_gauss_logpdf(t, mu, lam):
 
@@ -18,17 +31,25 @@ def inv_gauss_logpdf(t, mu, lam):
 @jax.jit
 def inv_gauss_logsf(t, mu, lam):
     """https://journal.r-project.org/archive/2016-1/giner-smyth.pdf"""
+    # Clamp inputs to avoid NaN from sqrt/division on non-positive values.
     mu = mu / lam
     t = t / lam
     r = 1.0 / jnp.sqrt(t)
     a = stats.norm.logcdf(-r * ((t / mu) - 1.0))
     b = 2.0 / mu + stats.norm.logcdf(-r * (t + mu) / mu)
-    return jnp.where(jnp.isposinf(t), -jnp.inf, jnp.where(t > 0.0, a + jnp.log1p(-jnp.exp(b - a)), 0.0))
+    # Clamp b - a <= 0 to prevent log1p argument < -1, which produces NaN.
+    # Mathematically b <= a always, but floating-point arithmetic can violate this.
+    result = a + jnp.log1p(-jnp.exp(jnp.minimum(b - a, 0.0)))
+    return jnp.where(t > 0.0, result, 0.0)
 
 @jax.jit
 def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
     rt = rt - t0
-    rt = jnp.maximum(1e-10, rt)
+    rt = jnp.maximum(rt, _FLOOR)
+
+    v = jnp.maximum(v, _FLOOR)
+    s = jnp.maximum(s, _FLOOR)
+    b = jnp.maximum(b, _FLOOR)
 
     # mu_winner = b/drift_winner
     mu = b/v
@@ -44,7 +65,7 @@ def create_rdm_two_accumulators_likelihood(data):
     choice = data[:, 1]
 
     @jax.jit
-    def likelihood_fun(x, min_ll=1e-12):
+    def likelihood_fun(x):
         x = jnp.exp(x)
         v_c_true = x[0] + x[1]
         v_c_false = x[0]
@@ -56,12 +77,10 @@ def create_rdm_two_accumulators_likelihood(data):
         log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
         log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
 
-        dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
-        dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
+        dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+        dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
 
-        ll = jnp.where(choice == 1, dens_true, dens_false)
-
-        return jnp.where(jnp.isfinite(ll), ll, jnp.log(min_ll))
+        return jnp.where(choice == 1, dens_true, dens_false)
 
     return likelihood_fun
 
@@ -77,7 +96,12 @@ def create_rdm_likelihood_factory_approx(conditioner):
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
         rt = rt - t0
-        rt = jnp.maximum(0.0, rt)
+        rt = jnp.maximum(rt, _FLOOR)
+
+        v = jnp.maximum(v, _FLOOR)
+        s = jnp.maximum(s, _FLOOR)
+        b = jnp.maximum(b, _FLOOR)
+
         return evaluate_pdf_sf(conditioner, rt, jnp.array([v, s, b]))
 
     def create_likelihood(data):
@@ -85,7 +109,7 @@ def create_rdm_likelihood_factory_approx(conditioner):
         choice = data[:, 1]
 
         @nnx.jit
-        def likelihood_fun(x, min_ll=1e-12):
+        def likelihood_fun(x):
             x = jnp.exp(x)
             v_true = x[0] + x[1]
             v_false = x[0]
@@ -97,12 +121,10 @@ def create_rdm_likelihood_factory_approx(conditioner):
             log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf_approx(rt, v_true, s_true, b, t0)
             log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf_approx(rt, v_false, s_false, b, t0)
 
-            dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
-            dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
+            dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+            dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
 
-            ll = jnp.where(choice == 1, dens_true, dens_false)
-
-            return jnp.where(jnp.isfinite(ll), ll, jnp.log(min_ll))
+            return jnp.where(choice == 1, dens_true, dens_false)
 
         return likelihood_fun
 
