@@ -74,19 +74,9 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
         halfnormal_scale=halfnormal_scale, percentile_interval=percentile_interval,
     )
 
-    # Joint returns (s, L, mu, log_theta) where:
-    #   s: HalfNormal output (P,) - standard deviations
-    #   L: TransformedDist output (P,P) - Cholesky factor L = diag(s) @ rho_chol
-    #   mu: Normal output (P,) - population mean
-    #   log_theta: MVN output (S,P) - subject params in log space
     params = prior.sample(seed=key_context)
 
-    # Sigma = L @ L.T
-    # rho = jnp.diag(1.0 / s) @ Sigma @ jnp.diag(1.0 / s)
-    # theta = jnp.exp(log_theta)
-
-    psi = params['s'][:, None] * params['psi_raw']
-    log_theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
+    log_theta = params["theta"]
     theta = jnp.exp(log_theta)
 
     context = params

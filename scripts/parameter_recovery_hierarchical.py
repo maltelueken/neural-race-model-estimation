@@ -107,7 +107,7 @@ def main(cfg):
         "s": tfb.Exp(),                 # HalfNormal -> Positive
         "mu": tfb.Identity(),           # Normal -> Real
         "psi_raw": tfb.CorrelationCholesky(), # Matrix -> Cholesky Factor
-        "z": tfb.Identity()             # Normal -> Real
+        "theta": tfb.Identity()             # Normal -> Real
     })
 
     def log_prior_fn(flat_params):
@@ -132,8 +132,9 @@ def main(cfg):
             unconstrained_params_dict = unravel_fn(flat_params)
             params = bijector.forward(unconstrained_params_dict)
             # Non-centered reconstruction logic
-            psi = params['s'][:, None] * params['psi_raw']
-            theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
+            # psi = params['s'][:, None] * params['psi_raw']
+            # theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
+            theta = params["theta"]
             return jnp.sum(likelihood_fun(theta))
 
         def logdensity_fn(params):

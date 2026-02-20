@@ -158,7 +158,18 @@ class HierarchicalRDMPriorLKJMVN:
             
             "psi_raw": tfd.CholeskyLKJ(num_params, lkj_concentration),
             
-            "z": tfd.Sample(tfd.Normal(0.0, 1.0), sample_shape=[num_subjects, num_params])
+            # CENTERED PARAMETERIZATION: 
+            # We replace `z` with `theta`, directly sampling the subject parameters.
+            # The lambda arguments must strictly match the dictionary keys defined above.
+            "theta": lambda psi_raw, s, mu: tfd.Sample(
+                tfd.MultivariateNormalTriL(
+                    loc=mu,
+                    # Broadcasting: s[..., jnp.newaxis] * psi_raw efficiently 
+                    # computes the matrix multiplication diag(s) @ psi_raw
+                    scale_tril=s[..., jnp.newaxis] * psi_raw
+                ),
+                sample_shape=[num_subjects]
+            )
         })
 
     def sample(self, seed):

@@ -81,8 +81,7 @@ def sample_conditional_crdm_hierarchical_lkj_mvn(
 
     params = prior.sample(seed=key_context)
 
-    psi = params['s'][:, None] * params['psi_raw']
-    log_theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
+    log_theta = params["theta"]
     theta = jnp.exp(log_theta)
 
     context = params
