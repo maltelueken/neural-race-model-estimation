@@ -4,6 +4,7 @@ from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
 from .rdm import _clamp_log
+from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
 
@@ -69,14 +70,15 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
         A function `create_likelihood(data, mask)` that returns a likelihood function.
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
-        rt = rt - t0
-        rt = jnp.maximum(rt, _FLOOR)
+        rt_shifted = rt - t0
+        rt_safe = jnp.maximum(rt_shifted, _FLOOR)
 
         v = jnp.maximum(v, _FLOOR)
         s = jnp.maximum(s, _FLOOR)
         b = jnp.maximum(b, _FLOOR)
 
-        return evaluate_pdf_sf(conditioner, rt, jnp.array([v, s, b]))
+        log_pdf, log_sf = evaluate_pdf_sf(conditioner, rt_safe, jnp.array([v, s, b]))
+        return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
     def create_likelihood(data, mask):
         def _single_subject_ll(subject_data, subject_mask, subject_params):

@@ -4,13 +4,14 @@ from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
 from .rdm import _clamp_log
+from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
 
 _FLOOR = 1e-10
 
 
-def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7, num_pop_params=35):
+def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
     """Factory for hierarchical neural-approximate likelihood for multi-subject CRDM.
 
     Args:
@@ -22,8 +23,8 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7
         A function `create_likelihood(data, mask)` that returns a likelihood function.
     """
     def crdm_log_pdf_sf(rt, v_c, amp, tau, s, b, t0):
-        rt = rt - t0
-        rt = jnp.maximum(rt, _FLOOR)
+        rt_shifted = rt - t0
+        rt_safe = jnp.maximum(rt_shifted, _FLOOR)
 
         v_c = jnp.maximum(v_c, _FLOOR)
         amp = jnp.maximum(amp, _FLOOR)
@@ -32,7 +33,8 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner, num_params=7
         b = jnp.maximum(b, _FLOOR)
 
         context = jnp.transpose(jnp.array([v_c, jnp.abs(amp), tau, s, b]))
-        return evaluate_pdf_sf(conditioner, rt, context)
+        log_pdf, log_sf = evaluate_pdf_sf(conditioner, rt_safe, context)
+        return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
     def create_likelihood(data, mask):
         def _single_subject_ll(subject_data, subject_mask, subject_params):

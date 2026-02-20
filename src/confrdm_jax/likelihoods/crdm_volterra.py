@@ -119,7 +119,8 @@ def crdm_volterra_log_pdf_sf(rt, v_c, amp, tau, s, b, t0, dt, num_steps):
     t_grid = jnp.arange(1, num_steps + 1) * dt
 
     # Decision time = observed RT minus non-decision time
-    decision_rt = jnp.maximum(rt - t0, dt)
+    rt_shifted = rt - t0
+    decision_rt = jnp.maximum(rt_shifted, dt)
 
     # Interpolate density and CDF at decision times
     g_at_rt = jnp.interp(decision_rt, t_grid, g_grid)
@@ -127,6 +128,13 @@ def crdm_volterra_log_pdf_sf(rt, v_c, amp, tau, s, b, t0, dt, num_steps):
 
     log_pdf = jnp.log(jnp.maximum(g_at_rt, 1e-30))
     log_sf = jnp.log(jnp.maximum(1.0 - G_at_rt, 1e-30))
+
+    # Steep penalty for impossible observations (rt <= t0)
+    _log_floor = jnp.log(1e-12)
+    valid = rt_shifted > dt
+    penalty = _log_floor + 1e3 * jnp.minimum(rt_shifted - dt, 0.0)
+    log_pdf = jnp.where(valid, log_pdf, penalty)
+    log_sf = jnp.where(valid, log_sf, 0.0)
 
     return log_pdf, log_sf
 

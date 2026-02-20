@@ -99,9 +99,7 @@ def main(cfg):
     conditioner.eval()
 
     # Create likelihood factory
-    likelihood_factory_approx = likelihood_factory_fn(
-        conditioner, num_params=num_params, num_pop_params=num_pop_params,
-    )
+    likelihood_factory_approx = likelihood_factory_fn(conditioner)
 
     smc_cfg = hier_cfg["smc"]
 
@@ -228,11 +226,7 @@ def main(cfg):
             logger.info("Running reference recovery...")
             sampling_key, ref_key = jax.random.split(sampling_key)
 
-            ref_likelihood_fn = instantiate(model_hier_cfg["likelihood_factory_ref"])
-            ref_likelihood = partial(
-                ref_likelihood_fn,
-                num_params=num_params, num_pop_params=num_pop_params,
-            )
+            ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
             final_state_ref, n_iter_ref = recover_population(
                 ref_key, data, mask, ref_likelihood, init_position,
             )

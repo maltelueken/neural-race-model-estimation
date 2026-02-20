@@ -19,6 +19,29 @@ def _clamp_log(x):
     """
     return jnp.maximum(jnp.nan_to_num(x, nan=_LOG_FLOOR), _LOG_FLOOR)
 
+
+def _penalize_invalid_rt(rt_shifted, log_pdf, log_sf):
+    """Replace log-densities with a steep penalty when rt <= t0.
+
+    For trials where rt - t0 <= 0, the observation is impossible under
+    the model.  Instead of returning a flat floor (zero gradient), we
+    return a linear penalty whose gradient pushes t0 below the minimum
+    observed RT.
+
+    Args:
+        rt_shifted: rt - t0 (before clamping).
+        log_pdf: Log-PDF computed on clamped rt.
+        log_sf: Log-SF computed on clamped rt.
+
+    Returns:
+        Corrected (log_pdf, log_sf) with steep penalty for invalid trials.
+    """
+    valid = rt_shifted > _FLOOR
+    penalty = _LOG_FLOOR + 1e3 * jnp.minimum(rt_shifted - _FLOOR, 0.0)
+    log_pdf = jnp.where(valid, log_pdf, penalty)
+    log_sf = jnp.where(valid, log_sf, 0.0)
+    return log_pdf, log_sf
+
 @jax.jit
 def inv_gauss_logpdf(t, mu, lam):
 
@@ -44,8 +67,8 @@ def inv_gauss_logsf(t, mu, lam):
 
 @jax.jit
 def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
-    rt = rt - t0
-    rt = jnp.maximum(rt, _FLOOR)
+    rt_shifted = rt - t0
+    rt_safe = jnp.maximum(rt_shifted, _FLOOR)
 
     v = jnp.maximum(v, _FLOOR)
     s = jnp.maximum(s, _FLOOR)
@@ -56,7 +79,9 @@ def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
     # lam_winner = (b/s_winner)**2
     lam = (b/s)**2
 
-    return inv_gauss_logpdf(rt, mu, lam), inv_gauss_logsf(rt, mu, lam)
+    log_pdf = inv_gauss_logpdf(rt_safe, mu, lam)
+    log_sf = inv_gauss_logsf(rt_safe, mu, lam)
+    return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
 
 def create_rdm_two_accumulators_likelihood(data):
@@ -95,14 +120,15 @@ def create_rdm_likelihood_factory_approx(conditioner):
         A function that takes data and returns a likelihood function.
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
-        rt = rt - t0
-        rt = jnp.maximum(rt, _FLOOR)
+        rt_shifted = rt - t0
+        rt_safe = jnp.maximum(rt_shifted, _FLOOR)
 
         v = jnp.maximum(v, _FLOOR)
         s = jnp.maximum(s, _FLOOR)
         b = jnp.maximum(b, _FLOOR)
 
-        return evaluate_pdf_sf(conditioner, rt, jnp.array([v, s, b]))
+        log_pdf, log_sf = evaluate_pdf_sf(conditioner, rt_safe, jnp.array([v, s, b]))
+        return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
     def create_likelihood(data):
         rt = data[:, 0]
