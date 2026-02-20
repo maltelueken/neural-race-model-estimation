@@ -114,8 +114,14 @@ def main(cfg):
         unconstrained_params_dict = unravel_fn(flat_params)
         params = bijector.forward(unconstrained_params_dict)
         prior_lp = prior.log_prob(params)
-        ljc = bijector.forward_log_det_jacobian(unconstrained_params_dict)
-        return prior_lp + jnp.sum(ljc)
+        # Compute Jacobian components separately to avoid broadcasting bug
+        # in JointMap.forward_log_det_jacobian (CC Jacobian gets broadcast
+        # across the Exp Jacobian's shape-(P,) output, overcounting by P).
+        ljc_exp = jnp.sum(unconstrained_params_dict['s'])  # Exp: sum(log(s))
+        ljc_cc = tfb.CorrelationCholesky().forward_log_det_jacobian(
+            unconstrained_params_dict['psi_raw'],
+        )
+        return prior_lp + ljc_exp + ljc_cc
 
     def recover_population(sampling_key, data, mask, create_likelihood_fun, init_position):
         """Run tempered SMC to recover hierarchical parameters for one population."""
