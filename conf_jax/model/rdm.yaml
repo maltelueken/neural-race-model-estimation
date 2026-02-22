@@ -43,6 +43,6 @@ hierarchical:
     _partial_: true
   prior:
     lkj_concentration: 2.0
-    inverse_gamma_scale:    [0.25, 0.25, 0.25, 0.25, 0.15]
+    inverse_gamma_scale:    [0.5, 0.5, 0.5, 0.5, 0.15]
     mu_loc:                 [0.1, 0.3, 0.1, 0.2, -1.2]
     mu_scale:               [0.25, 0.25, 0.25, 0.25, 0.1]
