@@ -132,26 +132,26 @@ class HierarchicalRDMPriorLKJMVN:
         num_subjects,
         num_params,
         lkj_concentration=2.0,
-        halfnormal_scale=None,
+        inverse_gamma_scale=None,
         mu_loc=None,
         mu_scale=None,
     ):
         self.num_params = num_params
-        halfnormal_scale = jnp.asarray(halfnormal_scale)
+        inverse_gamma_scale = jnp.asarray(inverse_gamma_scale)
         mu_loc = jnp.asarray(mu_loc)
         mu_scale = jnp.asarray(mu_scale)
 
-        if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or halfnormal_scale.shape[0] != num_params:
+        if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or inverse_gamma_scale.shape[0] != num_params:
             raise ValueError("Length of location and scale parameters must be equal to 'num_params'")
 
-        self._halfnormal_scale = halfnormal_scale
+        self._inverse_gamma_scale = inverse_gamma_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc
         self._mu_scale = mu_scale
 
         self._joint = tfd.JointDistributionNamed({
             # Each parameter in P gets its own HalfNormal scale
-            "s": tfd.Independent(tfd.HalfNormal(scale=halfnormal_scale), reinterpreted_batch_ndims=1),
+            "s": tfd.Independent(tfd.InverseGamma(concentration=2.0, scale=inverse_gamma_scale), reinterpreted_batch_ndims=1),
             
             # Each parameter in P gets its own Normal mean
             "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
