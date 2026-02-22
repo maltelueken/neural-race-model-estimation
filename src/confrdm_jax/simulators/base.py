@@ -137,6 +137,10 @@ class HierarchicalRDMPriorLKJMVN:
         mu_scale=None,
     ):
         self.num_params = num_params
+        # Non-centered parameterization covers all params except b (index -2) and t0 (index -1)
+        self.num_params_ncp = num_params - 2
+        num_params_ncp = self.num_params_ncp
+
         inverse_gamma_scale = jnp.asarray(inverse_gamma_scale)
         mu_loc = jnp.asarray(mu_loc)
         mu_scale = jnp.asarray(mu_scale)
@@ -149,27 +153,44 @@ class HierarchicalRDMPriorLKJMVN:
         self._mu_loc = mu_loc
         self._mu_scale = mu_scale
 
+        def _make_theta_bt_dist(z, s, mu, psi_raw):
+            # Full Cholesky factor L = diag(s) @ psi_raw, shape (P, P)
+            L = s[:, None] * psi_raw
+            # Bottom-left block couples z_ncp to the conditional mean of theta_bt
+            L_21 = L[num_params_ncp:, :num_params_ncp]  # (2, P_ncp)
+            # Bottom-right block is the Cholesky of the residual variance for theta_bt
+            L_22 = L[num_params_ncp:, num_params_ncp:]  # (2, 2)
+            # Conditional mean: mu_bt + z @ L_21^T, shape (S, 2)
+            cond_mean = mu[num_params_ncp:] + jnp.einsum('nk,jk->nj', z, L_21)
+            return tfd.Independent(
+                tfd.MultivariateNormalTriL(loc=cond_mean, scale_tril=L_22),
+                reinterpreted_batch_ndims=1,
+            )
+
         self._joint = tfd.JointDistributionNamed({
             # Each parameter in P gets its own HalfNormal scale
             "s": tfd.Independent(tfd.InverseGamma(concentration=2.0, scale=inverse_gamma_scale), reinterpreted_batch_ndims=1),
-            
+
             # Each parameter in P gets its own Normal mean
             "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
-            
+
             "psi_raw": tfd.CholeskyLKJ(num_params, lkj_concentration),
-            
-            # CENTERED PARAMETERIZATION: 
-            # We replace `z` with `theta`, directly sampling the subject parameters.
-            # The lambda arguments must strictly match the dictionary keys defined above.
-            "theta": lambda psi_raw, s, mu: tfd.Sample(
-                tfd.MultivariateNormalTriL(
-                    loc=mu,
-                    # Broadcasting: s[..., jnp.newaxis] * psi_raw efficiently 
-                    # computes the matrix multiplication diag(s) @ psi_raw
-                    scale_tril=s[..., jnp.newaxis] * psi_raw
+
+            # NON-CENTERED PARAMETERIZATION for all params except b and t0:
+            # z ~ N(0, I), shape (S, P_ncp).  Actual subject params are reconstructed as
+            #   theta_ncp = mu[:P_ncp] + einsum('nj,ij->ni', z, L_ncp)
+            "z": tfd.Independent(
+                tfd.Normal(
+                    loc=jnp.zeros((num_subjects, num_params_ncp)),
+                    scale=jnp.ones((num_subjects, num_params_ncp)),
                 ),
-                sample_shape=[num_subjects]
-            )
+                reinterpreted_batch_ndims=2,
+            ),
+
+            # CENTERED PARAMETERIZATION for b and t0:
+            # theta_bt | z, mu, s, psi_raw ~ MVN(mu_bt + L_21 @ z^T, L_22 @ L_22^T)
+            # where L_21, L_22 are blocks of the full Cholesky L = diag(s) @ psi_raw.
+            "theta_bt": _make_theta_bt_dist,
         })
 
     def sample(self, seed):

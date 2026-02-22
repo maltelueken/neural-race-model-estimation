@@ -67,6 +67,7 @@ def main(cfg):
     num_params = model_hier_cfg["num_params"]
 
     # Derived constants
+    num_params_ncp = num_params - 2  # Non-centered for all except b and t0
     num_L_params = num_params + num_params * (num_params - 1) // 2
     num_pop_params = num_params + num_L_params
 
@@ -104,10 +105,11 @@ def main(cfg):
     smc_cfg = hier_cfg["smc"]
 
     bijector = tfb.JointMap({
-        "s": tfb.Exp(),                 # HalfNormal -> Positive
-        "mu": tfb.Identity(),           # Normal -> Real
-        "psi_raw": tfb.CorrelationCholesky(), # Matrix -> Cholesky Factor
-        "theta": tfb.Identity()             # Normal -> Real
+        "s": tfb.Exp(),                       # InverseGamma -> Positive
+        "mu": tfb.Identity(),                 # Normal -> Real
+        "psi_raw": tfb.CorrelationCholesky(), # CholeskyLKJ -> unconstrained vector
+        "z": tfb.Identity(),                  # N(0,I) -> Real (already unconstrained)
+        "theta_bt": tfb.Identity(),           # log(b), log(t0) -> Real
     })
 
     def log_prior_fn(flat_params):
@@ -127,14 +129,14 @@ def main(cfg):
         """Run tempered SMC to recover hierarchical parameters for one population."""
         likelihood_fun = create_likelihood_fun(data, mask)
 
-        # Wrap the centered likelihood to accept non-centered parameterization
+        # Reconstruct theta from NCP (z) and centered (theta_bt)
         def log_likelihood_fn_wrapped(flat_params):
             unconstrained_params_dict = unravel_fn(flat_params)
             params = bijector.forward(unconstrained_params_dict)
-            # Non-centered reconstruction logic
-            # psi = params['s'][:, None] * params['psi_raw']
-            # theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
-            theta = params["theta"]
+            L = params['s'][:, None] * params['psi_raw']          # (P, P)
+            L_ncp = L[:num_params_ncp, :num_params_ncp]           # (P_ncp, P_ncp)
+            theta_ncp = params['mu'][:num_params_ncp] + jnp.einsum('nj,ij->ni', params['z'], L_ncp)  # (S, P_ncp)
+            theta = jnp.concatenate([theta_ncp, params['theta_bt']], axis=-1)  # (S, P)
             return jnp.sum(likelihood_fun(theta))
 
         def logdensity_fn(params):

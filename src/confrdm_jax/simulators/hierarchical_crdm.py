@@ -41,7 +41,12 @@ def sample_conditional_crdm_hierarchical_lkj_mvn(
 
     params = prior.sample(seed=key_context)
 
-    log_theta = params["theta"]
+    # Reconstruct subject-level log-parameters from NCP (z) and centered (theta_bt)
+    num_params_ncp = prior.num_params_ncp
+    L = params['s'][:, None] * params['psi_raw']           # (P, P)
+    L_ncp = L[:num_params_ncp, :num_params_ncp]            # (P_ncp, P_ncp)
+    theta_ncp = params['mu'][:num_params_ncp] + jnp.einsum('nj,ij->ni', params['z'], L_ncp)  # (S, P_ncp)
+    log_theta = jnp.concatenate([theta_ncp, params['theta_bt']], axis=-1)  # (S, P)
     theta = jnp.exp(log_theta)
 
     context = params
