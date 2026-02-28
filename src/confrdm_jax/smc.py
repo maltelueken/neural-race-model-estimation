@@ -1,15 +1,22 @@
 import jax
 import jax.numpy as jnp
 
-def smc_inference_loop(rng_key, smc_kernel, initial_state, max_steps=100):
-    """Run the tempered SMC algorithm and retain all intermediate states.
+def smc_inference_loop(rng_key, smc_kernel, initial_state, max_steps=200):
+    """Run the tempered SMC algorithm until lmbda reaches 1.
 
-    Returns (n_iter, final_state, history) where `history` is a PyTree
-    with arrays shaped (max_steps+1, ...) storing the state at each iteration index.
+    Args:
+        rng_key: JAX PRNG key.
+        smc_kernel: SMC step function (from blackjax.adaptive_tempered_smc.step).
+        initial_state: Initial SMC state.
+        max_steps: Safety cap on the number of iterations. Prevents infinite loops
+            if lmbda fails to converge. Default 200.
+
+    Returns:
+        Tuple of (n_iter, final_state).
     """
     def cond(carry):
         i, state, _k = carry
-        return state.lmbda < 1
+        return (state.lmbda < 1) & (i < max_steps)
 
     @jax.jit
     def one_step(carry):

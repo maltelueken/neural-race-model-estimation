@@ -52,8 +52,7 @@ def create_rdm_hierarchical_likelihood(data, mask):
 
     @jax.jit
     def likelihood_fun(x):
-        subj_params = x # x[num_pop_params:].reshape(num_subjects, num_params)
-        return jnp.sum(_vmapped_ll(data, mask, subj_params))
+        return jnp.sum(_vmapped_ll(data, mask, x))
 
     return likelihood_fun
 
@@ -108,8 +107,7 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
 
         @nnx.jit
         def likelihood_fun(x):
-            subj_params = x # x[num_pop_params:].reshape(num_subjects, num_params)
-            return jnp.sum(_vmapped_ll(data, mask, subj_params))
+            return jnp.sum(_vmapped_ll(data, mask, x))
 
         return likelihood_fun
 

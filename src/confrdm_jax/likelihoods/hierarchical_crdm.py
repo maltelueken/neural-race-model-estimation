@@ -93,8 +93,7 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
 
         @nnx.jit
         def likelihood_fun(x):
-            subj_params = x
-            return jnp.sum(_vmapped_ll(data, mask, subj_params))
+            return jnp.sum(_vmapped_ll(data, mask, x))
 
         return likelihood_fun
 
