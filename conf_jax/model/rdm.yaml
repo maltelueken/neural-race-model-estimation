@@ -29,6 +29,7 @@ num_params: 3
 
 hierarchical:
   num_params: 5
+  param_names: ["v_intercept", "v_slope", "s_true", "b", "t0"]
   prior_factory:
     _target_: confrdm_jax.simulators.create_hierarchical_rdm_prior_lkj_mvn
     _partial_: true

@@ -87,11 +87,11 @@ def main(cfg):
 
         last_states = jax.vmap(lambda _: last_state)(jnp.arange(num_chains))
 
-        trace = inference_loop_multiple_chains(
+        positions, _ = inference_loop_multiple_chains(
             sampling_key, kernel, last_states, cfg["mcmc"]["num_sampling"], num_chains,
         )
 
-        return jnp.exp(trace.position)
+        return jnp.exp(positions)
 
     # Approximate recovery
     sampling_key_approx, sampling_key_ref = jax.random.split(sampling_key, 2)
