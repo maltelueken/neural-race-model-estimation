@@ -320,9 +320,10 @@ def main(cfg):
         num_chains = smc_cfg["num_chains"]
         sample_keys = jax.random.split(sampling_key, num_chains)
 
-        n_iter, final_state = jax.vmap(
-            smc_inference_loop, in_axes=(0, None, None),
-        )(sample_keys, tempered.step, initial_state)
+        n_iter, final_state = jax.lax.map(
+            lambda key: smc_inference_loop(key, tempered.step, initial_state),
+            sample_keys,
+        )
 
         return final_state, n_iter
 
