@@ -136,6 +136,7 @@ class HierarchicalRDMPriorLKJMVN:
         mu_loc=None,
         mu_scale=None,
     ):
+        self.num_subjects = num_subjects
         self.num_params = num_params
         # Non-centered parameterization covers all params except b (index -2) and t0 (index -1)
         self.num_params_ncp = num_params - 2
@@ -148,6 +149,7 @@ class HierarchicalRDMPriorLKJMVN:
         if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or inverse_gamma_scale.shape[0] != num_params:
             raise ValueError("Length of location and scale parameters must be equal to 'num_params'")
 
+        self._inverse_gamma_shape = 2.0
         self._inverse_gamma_scale = inverse_gamma_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc
@@ -169,7 +171,10 @@ class HierarchicalRDMPriorLKJMVN:
 
         self._joint = tfd.JointDistributionNamed({
             # Each parameter in P gets its own HalfNormal scale
-            "s": tfd.Independent(tfd.InverseGamma(concentration=2.0, scale=inverse_gamma_scale), reinterpreted_batch_ndims=1),
+            "s": tfd.Independent(
+                tfd.InverseGamma(concentration=self._inverse_gamma_shape, scale=inverse_gamma_scale),
+                reinterpreted_batch_ndims=1
+            ),
 
             # Each parameter in P gets its own Normal mean
             "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
@@ -196,6 +201,50 @@ class HierarchicalRDMPriorLKJMVN:
     def sample(self, seed):
         """Sample from the prior, returning (s, L, mu, log_theta)."""
         return self._joint.sample(seed=seed)
+
+    def mode(self):
+        """Return the mode of each component in the joint prior.
+
+        Useful for initializing MCMC samplers.  The modal values are computed
+        analytically for each marginal / conditional:
+
+        - ``s``        : InverseGamma(α=2, β=scale) → mode = scale / 3
+        - ``mu``       : Normal(mu_loc, mu_scale)   → mode = mu_loc
+        - ``psi_raw``  : CholeskyLKJ(concentration≥1) → mode = identity
+        - ``z``        : Normal(0, 1)               → mode = 0
+        - ``theta_bt`` : conditional MVN at modal z, s, psi_raw →
+                         mode = mu_loc[P_ncp:] (L_21 = 0 when psi_raw = I)
+
+        Returns
+        -------
+        dict with keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt``.
+        """
+        # InverseGamma(alpha=2, beta): mode = beta / (alpha + 1) = beta / 3
+        s_mode = self._inverse_gamma_scale / (self._inverse_gamma_shape + 1.0)
+
+        # Normal: mode = loc
+        mu_mode = self._mu_loc
+
+        # CholeskyLKJ: mode is the identity Cholesky factor (for concentration >= 1)
+        psi_raw_mode = jnp.eye(self.num_params)
+
+        # Standard Normal: mode = 0
+        z_mode = jnp.zeros((self.num_subjects, self.num_params_ncp))
+
+        # theta_bt | z=0, mu=mu_loc, s=s_mode, psi_raw=I:
+        #   L = diag(s_mode) @ I  =>  L_21 (off-diagonal block) = 0
+        #   cond_mean = mu_loc[P_ncp:] + einsum('nk,jk->nj', 0, L_21) = mu_loc[P_ncp:]
+        theta_bt_mode = jnp.broadcast_to(
+            self._mu_loc[self.num_params_ncp:], (self.num_subjects, 2)
+        )
+
+        return {
+            "s": s_mode,
+            "mu": mu_mode,
+            "psi_raw": psi_raw_mode,
+            "z": z_mode,
+            "theta_bt": theta_bt_mode,
+        }
 
     def log_prob(self, params):
         """Evaluate log-prior density in the (L, mu, log_theta) parameterization.

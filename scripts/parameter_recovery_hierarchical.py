@@ -350,8 +350,10 @@ def main(cfg):
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
+        prior_mode = prior.mode()
+
         # Build initial position from true params (used for warmup adaptation)
-        init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(context))
+        init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(prior_mode))
 
         # Reconstruct interpretable subject-level parameters from prior samples
         L_true = context['s'][:, None] * context['psi_raw']                  # (P, P)
