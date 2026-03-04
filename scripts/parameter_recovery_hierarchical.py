@@ -275,9 +275,9 @@ def main(cfg):
         def logdensity_fn(params):
             return log_prior_fn(params) + log_likelihood_fn_wrapped(params)
 
-        # Run window adaptation to find good HMC parameters.
-        # target_acceptance_rate=0.9 recommended for hierarchical models with
-        # non-trivial geometry near the Cholesky constraint boundary.
+        # Run window adaptation to find good NUTS parameters.
+        # target_acceptance_rate=0.8 avoids the degenerate near-zero step sizes
+        # that 0.9 produces when the NLE posterior has high curvature.
         sampling_key, warmup_key = jax.random.split(sampling_key)
         _, _, adapted_params = warmup(
             blackjax.nuts,
@@ -285,11 +285,17 @@ def main(cfg):
             init_position,
             smc_cfg["num_warmup"],
             warmup_key,
-            target_acceptance_rate=0.9,
+            target_acceptance_rate=0.8,
         )
-        logger.info(
-            "Adapted step size: %s", adapted_params["step_size"],
-        )
+
+        step_size = adapted_params["step_size"]
+        if step_size < 1e-4:
+            logger.warning(
+                "Degenerate step size %.2e after warmup — overriding to 1e-3",
+                step_size,
+            )
+            adapted_params = {**adapted_params, "step_size": 1e-3}
+        logger.info("Adapted step size: %s", adapted_params["step_size"])
 
         hmc_parameters = dict(
             step_size=adapted_params["step_size"],
