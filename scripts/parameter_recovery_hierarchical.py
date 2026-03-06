@@ -57,6 +57,21 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
     return jax.vmap(sample_and_ravel)(keys)
 
 
+def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
+    """Map one flat unconstrained particle → (mu, s, log_theta)."""
+    unconstrained = unravel_fn(flat_particle)
+    params = bijector.forward(unconstrained)
+    L = params['s'][:, None] * params['psi_raw']                    # (P, P)
+    L_ncp = L[:num_params_ncp, :num_params_ncp]                     # (P_ncp, P_ncp)
+    theta_ncp = params['mu'][:num_params_ncp] + jnp.einsum(
+        'nj,ij->ni', params['z'], L_ncp,
+    )                                                                # (S, P_ncp)
+    log_theta = jnp.concatenate(
+        [theta_ncp, params['theta_bt']], axis=-1,
+    )                                                                # (S, P)
+    return params['mu'], params['s'], log_theta
+
+
 def _build_population_datatree(
     final_state,
     n_iter,
@@ -101,25 +116,13 @@ def _build_population_datatree(
         constant_data groups, ready to save as netCDF.
     """
 
-    def reconstruct_single(flat_particle):
-        """Map one flat unconstrained particle → (mu, s, log_theta)."""
-        unconstrained = unravel_fn(flat_particle)
-        params = bijector.forward(unconstrained)
-        L = params['s'][:, None] * params['psi_raw']                    # (P, P)
-        L_ncp = L[:num_params_ncp, :num_params_ncp]                     # (P_ncp, P_ncp)
-        theta_ncp = params['mu'][:num_params_ncp] + jnp.einsum(
-            'nj,ij->ni', params['z'], L_ncp,
-        )                                                                # (S, P_ncp)
-        log_theta = jnp.concatenate(
-            [theta_ncp, params['theta_bt']], axis=-1,
-        )                                                                # (S, P)
-        return params['mu'], params['s'], log_theta
+    reconstruct = lambda p: _reconstruct_particle(p, unravel_fn, bijector, num_params_ncp)
 
     # Vmap over particles (inner) then chains (outer):
     #   pop_mu:        (chains, draws, P)
     #   pop_s:         (chains, draws, P)
     #   pop_log_theta: (chains, draws, S, P)
-    pop_mu, pop_s, pop_log_theta = jax.vmap(jax.vmap(reconstruct_single))(
+    pop_mu, pop_s, pop_log_theta = jax.vmap(jax.vmap(reconstruct))(
         final_state.particles,
     )
 
@@ -331,10 +334,16 @@ def main(cfg):
             sample_keys,
         )
 
-        return final_state, n_iter
+        return final_state, n_iter, initial_particles
 
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
+
+    # Compute unravel_fn once (shape is the same for all populations)
+    prior_mode = prior.mode()
+    init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(prior_mode))
+
+    reconstruct = lambda p: _reconstruct_particle(p, unravel_fn, bijector, num_params_ncp)
 
     for pop_idx in range(num_populations):
         logger.info("Population %d / %d", pop_idx + 1, num_populations)
@@ -350,11 +359,6 @@ def main(cfg):
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
-        prior_mode = prior.mode()
-
-        # Build initial position from true params (used for warmup adaptation)
-        init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(prior_mode))
-
         # Reconstruct interpretable subject-level parameters from prior samples
         L_true = context['s'][:, None] * context['psi_raw']                  # (P, P)
         L_ncp_true = L_true[:num_params_ncp, :num_params_ncp]                # (P_ncp, P_ncp)
@@ -369,10 +373,26 @@ def main(cfg):
         logger.info("Running approximate recovery...")
         sampling_key, approx_key = jax.random.split(sampling_key)
 
-        final_state, n_iter = recover_population(
+        final_state, n_iter, initial_particles = recover_population(
             approx_key, data, mask, likelihood_factory_approx, init_position, unravel_fn,
         )
         logger.info("SMC converged in %s iterations", n_iter)
+
+        prior_mu, prior_s, prior_log_theta = jax.vmap(reconstruct)(initial_particles)
+        subjects = np.arange(num_subjects)
+        prior_ds = xr.Dataset(
+            {
+                "mu":    (["draw", "param"], np.exp(np.array(prior_mu))),
+                "sigma": (["draw", "param"], np.array(prior_s)),
+                **{name: (["draw", "subject"], np.exp(np.array(prior_log_theta[..., i])))
+                   for i, name in enumerate(param_names)},
+            },
+            coords={
+                "draw": np.arange(initial_particles.shape[0]),
+                "subject": subjects,
+                "param": param_names,
+            },
+        )
 
         dt = _build_population_datatree(
             final_state=final_state,
@@ -387,6 +407,7 @@ def main(cfg):
             param_names=param_names,
             pop_idx=pop_idx,
         )
+        dt["prior"] = prior_ds
         approx_path = f"hierarchical_recovery_pop{pop_idx}_approx.nc"
         logger.info("Saving approx results to %s", approx_path)
         dt.to_netcdf(approx_path)
@@ -397,7 +418,7 @@ def main(cfg):
             sampling_key, ref_key = jax.random.split(sampling_key)
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
-            final_state_ref, n_iter_ref = recover_population(
+            final_state_ref, n_iter_ref, _ = recover_population(
                 ref_key, data, mask, ref_likelihood, init_position, unravel_fn,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
@@ -415,6 +436,7 @@ def main(cfg):
                 param_names=param_names,
                 pop_idx=pop_idx,
             )
+            dt_ref["prior"] = xr.DataTree(dataset=prior_ds)
             ref_path = f"hierarchical_recovery_pop{pop_idx}_ref.nc"
             logger.info("Saving ref results to %s", ref_path)
             dt_ref.to_netcdf(ref_path)
