@@ -43,9 +43,9 @@ def _build_recovery_datatree(samples, data, true_params, prior_ds, param_names):
     num_subjects = data.shape[0]
     subjects = np.arange(num_subjects)
 
-    # samples: (subjects, chains, draws, params) → per param: (chains, draws, subjects)
+    # samples: (subjects, draws, chains, params) → per param: (chains, draws, subjects)
     posterior_ds = az.dict_to_dataset(
-        {name: np.moveaxis(np.array(samples[..., i]), 0, -1)
+        {name: np.transpose(np.array(samples[..., i]), (2, 1, 0))
          for i, name in enumerate(param_names)},
         dims={name: ["subject"] for name in param_names},
         coords={"subject": subjects},
