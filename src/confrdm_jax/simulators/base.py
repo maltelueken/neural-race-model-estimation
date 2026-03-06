@@ -149,7 +149,7 @@ class HierarchicalRDMPriorLKJMVN:
         if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or inverse_gamma_scale.shape[0] != num_params:
             raise ValueError("Length of location and scale parameters must be equal to 'num_params'")
 
-        self._inverse_gamma_shape = 2.0
+        self._inverse_gamma_shape = 4.0
         self._inverse_gamma_scale = inverse_gamma_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc
