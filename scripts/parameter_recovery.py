@@ -95,7 +95,8 @@ def main(cfg):
     conditioner = load_conditioner(conditioner, conditioner_path)
     conditioner.eval()
 
-    test_key = jax.random.key(cfg["test_seed"])
+    # Make sure that different numbers of trials have different base seeds
+    test_key = jax.random.key(cfg["test_seed"] + cfg["test_num_obs"])
     data_key, sampling_key, prior_sample_key = jax.random.split(test_key, 3)
 
     # Instantiate prior and sampler from config
