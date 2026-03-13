@@ -29,6 +29,7 @@ num_params: 5
 
 hierarchical:
   num_params: 7
+  param_names: ["v_c_intercept", "v_c_slope", "amp", "tau", "s_true", "b", "t0"]
   prior_factory:
     _target_: confrdm_jax.simulators.create_hierarchical_crdm_prior_lkj_mvn
     _partial_: true
@@ -42,12 +43,6 @@ hierarchical:
     _partial_: true
   prior:
     lkj_concentration: 2.0
-    halfnormal_scale: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
-    percentile_interval:
-      - [0.5, 1.5]    # v_c_intercept
-      - [1.0, 4.0]    # v_c_slope
-      - [0.1, 0.5]    # amp
-      - [0.05, 0.2]   # tau
-      - [0.5, 1.5]    # s_true
-      - [0.5, 2.5]    # b
-      - [0.1, 0.5]    # t0
+    inverse_gamma_scale:    [0.4, 0.8, 0.8, 0.4, 0.8, 0.8, 0.25]
+    mu_loc:                 [0.1, 0.5, -1.4, -2.2, -0.2, -0.2, -1.2]
+    mu_scale:               [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.1]

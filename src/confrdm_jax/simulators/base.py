@@ -132,38 +132,119 @@ class HierarchicalRDMPriorLKJMVN:
         num_subjects,
         num_params,
         lkj_concentration=2.0,
-        halfnormal_scale=None,
+        inverse_gamma_scale=None,
         mu_loc=None,
         mu_scale=None,
     ):
+        self.num_subjects = num_subjects
         self.num_params = num_params
-        halfnormal_scale = jnp.asarray(halfnormal_scale)
+        # Non-centered parameterization covers all params except b (index -2) and t0 (index -1)
+        self.num_params_ncp = num_params - 2
+        num_params_ncp = self.num_params_ncp
+
+        inverse_gamma_scale = jnp.asarray(inverse_gamma_scale)
         mu_loc = jnp.asarray(mu_loc)
         mu_scale = jnp.asarray(mu_scale)
 
-        if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or halfnormal_scale.shape[0] != num_params:
+        if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or inverse_gamma_scale.shape[0] != num_params:
             raise ValueError("Length of location and scale parameters must be equal to 'num_params'")
 
-        self._halfnormal_scale = halfnormal_scale
+        self._inverse_gamma_shape = 3.0
+        self._inverse_gamma_scale = inverse_gamma_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc
         self._mu_scale = mu_scale
 
+        def _make_theta_bt_dist(z, s, mu, psi_raw):
+            # Full Cholesky factor L = diag(s) @ psi_raw, shape (P, P)
+            L = s[:, None] * psi_raw
+            # Bottom-left block couples z_ncp to the conditional mean of theta_bt
+            L_21 = L[num_params_ncp:, :num_params_ncp]  # (2, P_ncp)
+            # Bottom-right block is the Cholesky of the residual variance for theta_bt
+            L_22 = L[num_params_ncp:, num_params_ncp:]  # (2, 2)
+            # Conditional mean: mu_bt + z @ L_21^T, shape (S, 2)
+            cond_mean = mu[num_params_ncp:] + jnp.einsum('nk,jk->nj', z, L_21)
+            return tfd.Independent(
+                tfd.MultivariateNormalTriL(loc=cond_mean, scale_tril=L_22),
+                reinterpreted_batch_ndims=1,
+            )
+
         self._joint = tfd.JointDistributionNamed({
             # Each parameter in P gets its own HalfNormal scale
-            "s": tfd.Independent(tfd.HalfNormal(scale=halfnormal_scale), reinterpreted_batch_ndims=1),
-            
+            "s": tfd.Independent(
+                tfd.InverseGamma(concentration=self._inverse_gamma_shape, scale=inverse_gamma_scale),
+                reinterpreted_batch_ndims=1
+            ),
+
             # Each parameter in P gets its own Normal mean
             "mu": tfd.Independent(tfd.Normal(loc=mu_loc, scale=mu_scale), reinterpreted_batch_ndims=1),
-            
+
             "psi_raw": tfd.CholeskyLKJ(num_params, lkj_concentration),
-            
-            "z": tfd.Sample(tfd.Normal(0.0, 1.0), sample_shape=[num_subjects, num_params])
+
+            # NON-CENTERED PARAMETERIZATION for all params except b and t0:
+            # z ~ N(0, I), shape (S, P_ncp).  Actual subject params are reconstructed as
+            #   theta_ncp = mu[:P_ncp] + einsum('nj,ij->ni', z, L_ncp)
+            "z": tfd.Independent(
+                tfd.Normal(
+                    loc=jnp.zeros((num_subjects, num_params_ncp)),
+                    scale=jnp.ones((num_subjects, num_params_ncp)),
+                ),
+                reinterpreted_batch_ndims=2,
+            ),
+
+            # CENTERED PARAMETERIZATION for b and t0:
+            # theta_bt | z, mu, s, psi_raw ~ MVN(mu_bt + L_21 @ z^T, L_22 @ L_22^T)
+            # where L_21, L_22 are blocks of the full Cholesky L = diag(s) @ psi_raw.
+            "theta_bt": _make_theta_bt_dist,
         })
 
     def sample(self, seed):
         """Sample from the prior, returning (s, L, mu, log_theta)."""
         return self._joint.sample(seed=seed)
+
+    def mode(self):
+        """Return the mode of each component in the joint prior.
+
+        Useful for initializing MCMC samplers.  The modal values are computed
+        analytically for each marginal / conditional:
+
+        - ``s``        : InverseGamma(α=2, β=scale) → mode = scale / 3
+        - ``mu``       : Normal(mu_loc, mu_scale)   → mode = mu_loc
+        - ``psi_raw``  : CholeskyLKJ(concentration≥1) → mode = identity
+        - ``z``        : Normal(0, 1)               → mode = 0
+        - ``theta_bt`` : conditional MVN at modal z, s, psi_raw →
+                         mode = mu_loc[P_ncp:] (L_21 = 0 when psi_raw = I)
+
+        Returns
+        -------
+        dict with keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt``.
+        """
+        # InverseGamma(alpha=2, beta): mode = beta / (alpha + 1) = beta / 3
+        s_mode = self._inverse_gamma_scale / (self._inverse_gamma_shape + 1.0)
+
+        # Normal: mode = loc
+        mu_mode = self._mu_loc
+
+        # CholeskyLKJ: mode is the identity Cholesky factor (for concentration >= 1)
+        psi_raw_mode = jnp.eye(self.num_params)
+
+        # Standard Normal: mode = 0
+        z_mode = jnp.zeros((self.num_subjects, self.num_params_ncp))
+
+        # theta_bt | z=0, mu=mu_loc, s=s_mode, psi_raw=I:
+        #   L = diag(s_mode) @ I  =>  L_21 (off-diagonal block) = 0
+        #   cond_mean = mu_loc[P_ncp:] + einsum('nk,jk->nj', 0, L_21) = mu_loc[P_ncp:]
+        theta_bt_mode = jnp.broadcast_to(
+            self._mu_loc[self.num_params_ncp:], (self.num_subjects, 2)
+        )
+
+        return {
+            "s": s_mode,
+            "mu": mu_mode,
+            "psi_raw": psi_raw_mode,
+            "z": z_mode,
+            "theta_bt": theta_bt_mode,
+        }
 
     def log_prob(self, params):
         """Evaluate log-prior density in the (L, mu, log_theta) parameterization.

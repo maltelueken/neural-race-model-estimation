@@ -9,36 +9,15 @@ from .crdm import simulate_crdm_dataset
 def create_hierarchical_crdm_prior_lkj_mvn(
     num_subjects,
     lkj_concentration=2.0,
-    halfnormal_scale=None,
-    percentile_interval=None,
+    inverse_gamma_scale=None,
+    mu_loc=None,
+    mu_scale=None,
 ):
-    """Create a hierarchical CRDM prior with LKJ-MVN structure.
-
-    Parameters are log-normally distributed. Supply a 95% credible interval
-    [P2.5, P97.5] on the original (non-log) scale for each of the 7 CRDM
-    parameters; the function converts that into Normal hyperparameters
-    (mu_loc, mu_scale) in log-space.
-
-    Parameter order: [v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]
-
-    Args:
-        num_subjects: Number of subjects.
-        lkj_concentration: Concentration for CholeskyLKJ prior.
-        halfnormal_scale: array-like, shape (7,). Scale of HalfNormal prior on
-            between-subject standard deviations in log-space.
-        percentile_interval: array-like, shape (7, 2). Each row is [lo, hi] —
-            the 2.5th and 97.5th percentile of the marginal prior on that
-            parameter (on the original, non-log scale).
-
-    Returns:
-        HierarchicalRDMPriorLKJMVN instance.
-    """
-    mu_loc, mu_scale = interval_to_mu_loc_scale(percentile_interval, halfnormal_scale)
     return HierarchicalRDMPriorLKJMVN(
         num_subjects,
         num_params=7,
         lkj_concentration=lkj_concentration,
-        halfnormal_scale=halfnormal_scale,
+        inverse_gamma_scale=inverse_gamma_scale,
         mu_loc=mu_loc,
         mu_scale=mu_scale,
     )
@@ -46,43 +25,28 @@ def create_hierarchical_crdm_prior_lkj_mvn(
 
 def sample_conditional_crdm_hierarchical_lkj_mvn(
     key, num_trials, num_subjects,
-    lkj_concentration=2.0, halfnormal_scale=None, percentile_interval=None,
+    lkj_concentration=2.0,
+    inverse_gamma_scale=None,
+    mu_loc=None,
+    mu_scale=None,
     dt=0.001, t_max=4.0,
 ):
-    """Sample data from LKJ-MVN hierarchical CRDM prior.
-
-    Simulates half congruent and half incongruent trials per subject,
-    concatenated with a condition indicator column.
-
-    Args:
-        key: JAX random key.
-        num_trials: Total number of trials per subject (half congruent, half incongruent).
-        num_subjects: Number of subjects.
-        lkj_concentration: LKJ concentration parameter.
-        halfnormal_scale: Scale for HalfNormal prior on std devs (7,).
-        percentile_interval: array-like, shape (7, 2). Each row is [lo, hi] —
-            the 2.5th and 97.5th percentile of the marginal prior on that
-            parameter (on the original, non-log scale).
-            Parameter order: [v_c_intercept, v_c_slope, amp, tau, s_true, b, t0].
-        dt: Time step for simulation.
-        t_max: Maximum simulation time.
-
-    Returns:
-        Tuple of (data, context):
-            data: Simulated data array (S, num_trials, 3) with columns [RT, choice, condition].
-            context: Dictionary containing hierarchical prior sample.
-    """
     key_context, key_data_con, key_data_inc = jax.random.split(key, 3)
 
     prior = create_hierarchical_crdm_prior_lkj_mvn(
         num_subjects, lkj_concentration=lkj_concentration,
-        halfnormal_scale=halfnormal_scale, percentile_interval=percentile_interval,
+        inverse_gamma_scale=inverse_gamma_scale, mu_loc=mu_loc,
+        mu_scale=mu_scale,
     )
 
     params = prior.sample(seed=key_context)
 
-    psi = params['s'][:, None] * params['psi_raw']
-    log_theta = params['mu'] + jnp.einsum('nj,ij->ni', params['z'], psi)
+    # Reconstruct subject-level log-parameters from NCP (z) and centered (theta_bt)
+    num_params_ncp = prior.num_params_ncp
+    L = params['s'][:, None] * params['psi_raw']           # (P, P)
+    L_ncp = L[:num_params_ncp, :num_params_ncp]            # (P_ncp, P_ncp)
+    theta_ncp = params['mu'][:num_params_ncp] + jnp.einsum('nj,ij->ni', params['z'], L_ncp)  # (S, P_ncp)
+    log_theta = jnp.concatenate([theta_ncp, params['theta_bt']], axis=-1)  # (S, P)
     theta = jnp.exp(log_theta)
 
     context = params
