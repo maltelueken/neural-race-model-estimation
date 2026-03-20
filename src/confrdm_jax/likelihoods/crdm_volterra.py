@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 
-from .rdm import inv_gauss_log_pdf_sf
+from .rdm import inv_gauss_log_pdf_sf, _clamp_log, _penalize_invalid_rt
 
 
 def scaled_gamma_density(t, amp, tau, a_shape=2.0):
@@ -70,29 +70,28 @@ def solve_volterra_fpt(v_c, amp, tau, s, b, dt, num_steps):
     h = stats.norm.cdf((M - b) / (sigma * jnp.sqrt(t_grid)))
     indices = jnp.arange(num_steps)
 
-    def scan_fn(carry, n):
-        g_array, G_cumulative = carry
+    # Precompute full lower-triangular kernel matrix — vectorized, outside scan
+    t_n = t_grid[:, None]           # (N, 1)
+    t_i = t_grid[None, :]           # (1, N)
+    dt_diff = jnp.maximum(t_n - t_i, 1e-10)
+    M_diff = M[:, None] - M[None, :]
+    K_mat = stats.norm.cdf(M_diff / (sigma * jnp.sqrt(dt_diff)))
+    K_mat = jnp.tril(K_mat, k=-1)  # zero diagonal and upper triangle
 
-        # Kernel K(t_n, t_i) = Φ((M[n] - M[i]) / (σ√(t_n - t_i)))
-        dt_diff = jnp.maximum(t_grid[n] - t_grid, 1e-10)
-        M_diff = M[n] - M
-        K_vals = stats.norm.cdf(M_diff / (sigma * jnp.sqrt(dt_diff)))
-
-        # Sum over previous steps only (mask i < n)
-        mask = indices < n
-        prev_sum = jnp.sum(g_array * K_vals * mask) * dt
+    def scan_fn(g_array, n):
+        prev_sum = jnp.dot(g_array, K_mat[n]) * dt
 
         # Solve for g(t_n): K(t_n, t_n) = 0.5
         g_n = (h[n] - prev_sum) / (dt * 0.5)
         g_n = jnp.maximum(g_n, 0.0)
 
         g_array = g_array.at[n].set(g_n)
-        G_cumulative = G_cumulative + g_n * dt
-
-        return (g_array, G_cumulative), (g_n, G_cumulative)
+        return g_array, g_n
 
     g_init = jnp.zeros(num_steps)
-    (_, _), (g_grid, G_grid) = jax.lax.scan(scan_fn, (g_init, 0.0), indices)
+    _, g_grid = jax.lax.scan(scan_fn, g_init, indices)
+
+    G_grid = jnp.cumsum(g_grid) * dt
 
     return g_grid, G_grid
 
@@ -130,13 +129,13 @@ def crdm_volterra_log_pdf_sf(rt, v_c, amp, tau, s, b, t0, dt, num_steps):
     log_sf = jnp.log(jnp.maximum(1.0 - G_at_rt, 1e-30))
 
     # Steep penalty for impossible observations (rt <= t0)
-    _log_floor = jnp.log(1e-12)
-    valid = rt_shifted > dt
-    penalty = _log_floor + 1e3 * jnp.minimum(rt_shifted - dt, 0.0)
-    log_pdf = jnp.where(valid, log_pdf, penalty)
-    log_sf = jnp.where(valid, log_sf, 0.0)
+    # _log_floor = jnp.log(1e-12)
+    # valid = rt_shifted > dt
+    # penalty = _log_floor + 1e3 * jnp.minimum(rt_shifted - dt, 0.0)
+    # log_pdf = jnp.where(valid, log_pdf, penalty)
+    # log_sf = jnp.where(valid, log_sf, 0.0)
 
-    return log_pdf, log_sf
+    return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
 
 def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
@@ -196,8 +195,8 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
         log_sf_false = jnp.where(condition == 1, ig_log_sf_false, inc_log_sf)
 
         # Racing likelihood: pdf(winner) * sf(loser)
-        dens_choice_1 = log_pdf_true + log_sf_false
-        dens_choice_0 = log_pdf_false + log_sf_true
+        dens_choice_1 = _clamp_log(log_pdf_true) + _clamp_log(log_sf_false)
+        dens_choice_0 = _clamp_log(log_pdf_false) + _clamp_log(log_sf_true)
 
         ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
 
