@@ -23,6 +23,14 @@ crdm:
   num_mid: 128
   conditioners: [  # list of {dt: float, path: str}
     {
+      dt: 0.05,
+      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.05/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+    },
+    {
+      dt: 0.005,
+      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+    },
+    {
       dt: 0.0005,
       path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
     }
