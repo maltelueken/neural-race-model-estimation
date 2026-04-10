@@ -1,7 +1,11 @@
 """CRDM likelihood via Volterra integral equation for first-passage time density.
 
-Solves the Fortet equation numerically to compute the FPT density of a diffusion
-process with time-varying drift (gamma-pulse conflict signal) through a constant boundary.
+Solves the Fortet–Smith integral equation of the second kind numerically to compute
+the FPT density of a diffusion process with time-varying drift (gamma-pulse conflict
+signal) through a constant upper boundary.
+
+Reference implementation: integral.py (Richter, Ulrich & Janczyk).
+Mathematical derivation: VOLTERRA.md.
 """
 
 from functools import partial
@@ -10,46 +14,32 @@ import jax
 import jax.numpy as jnp
 from jax.scipy import stats
 
+from confrdm_jax.simulators.crdm_utils import normalized_gamma, normalized_gamma_derivative
 from .rdm import inv_gauss_log_pdf_sf, _clamp_log, _penalize_invalid_rt
 
-
-def scaled_gamma_density(t, amp, tau, a_shape=2.0):
-    """Scaled gamma density (antiderivative of gamma_pulse).
-
-    Args:
-        t: Time points.
-        amp: Amplitude of the conflict signal.
-        tau: Time scale (decay rate).
-        a_shape: Shape parameter (fixed at 2.0 for CRDM).
-
-    Returns:
-        Scaled gamma density evaluated at t.
-    """
-    return amp * jnp.exp(-t / tau) * (jnp.e * t / ((a_shape - 1) * tau)) ** (a_shape - 1)
-
-
 def integrated_drift(t, v_c, amp, tau, a_shape=2.0):
-    """Integrated drift M(t) = v_c * t + scaled_gamma_density(t).
+    return v_c * t + normalized_gamma(t, amp, tau, a_shape)
 
-    Args:
-        t: Time points.
-        v_c: Constant drift component.
-        amp: Amplitude of the conflict signal.
-        tau: Time scale.
-        a_shape: Shape parameter (fixed at 2.0).
 
-    Returns:
-        M(t), the integrated drift at each time point.
-    """
-    return v_c * t + scaled_gamma_density(t, amp, tau, a_shape)
+def instantaneous_drift(t, v_c, amp, tau, a_shape=2.0):
+    return v_c + normalized_gamma_derivative(t, amp, tau, a_shape)
 
 
 @partial(jax.jit, static_argnames=["num_steps"])
 def solve_volterra_fpt(v_c, amp, tau, s, b, dt, num_steps):
-    """Solve the Fortet equation for FPT density on a uniform time grid.
+    """Solve the Fortet–Smith equation of the second kind for the FPT density.
 
-    Solves: h(tₙ) = Σᵢ g(tᵢ) · K(tₙ, tᵢ) · dt
-    where h(t) = Φ((M(t) - b) / (σ√t)) and K(t,s) = Φ((M(t) - M(s)) / (σ√(t-s))).
+    Implements the single-boundary, starting-at-zero case of Smith (2000) / Richter
+    et al. integral.py.  The equation is:
+
+        g(tₖ) = φ(b, tₖ | 0, 0) · (v(tₖ) + (b − M(tₖ))/tₖ)
+                + 2·Δt · Σⱼ₌₁^{k−1} g(tⱼ) · ψ(b, tₖ | b, tⱼ)
+
+    where φ is the Gaussian transition PDF and
+        ψ(aᵢ, t | aⱼ, tₐ) = φ(aᵢ, t | aⱼ, tₐ)/2 · (−v(t) + (M(t)−M(tₐ))/(t−tₐ)).
+
+    The ψ kernel vanishes on the diagonal (O(√Δt) → 0), so no special treatment
+    of the i=k term is needed and the forward sum runs only over j < k.
 
     Args:
         v_c: Constant drift component.
@@ -67,24 +57,30 @@ def solve_volterra_fpt(v_c, amp, tau, s, b, dt, num_steps):
     sigma = s
     t_grid = jnp.arange(1, num_steps + 1) * dt
     M = integrated_drift(t_grid, v_c, amp, tau)
-    h = stats.norm.cdf((M - b) / (sigma * jnp.sqrt(t_grid)))
+    v_inst = instantaneous_drift(t_grid, v_c, amp, tau)
+
+    # Homogeneous (initial) term: φ(b,t|0,0) · (v(t) + (b−M(t))/t)
+    sqrt_t = jnp.sqrt(t_grid)
+    phi_0 = stats.norm.pdf((b - M) / (sigma * sqrt_t)) / (sigma * sqrt_t)
+    h0 = phi_0 * (v_inst + (b - M) / t_grid)
+
+    # Precompute lower-triangular ψ kernel matrix — vectorized, outside scan
+    # ψ(b,tₖ|b,tⱼ) = φ(b,tₖ|b,tⱼ)/2 · (−v(tₖ) + (Mₖ−Mⱼ)/(tₖ−tⱼ))
+    t_n = t_grid[:, None]           # (N, 1)
+    t_j = t_grid[None, :]           # (1, N)
+    dt_diff = jnp.maximum(t_n - t_j, 1e-10)
+    M_diff = M[:, None] - M[None, :]
+    v_n = v_inst[:, None]           # instantaneous drift at tₖ
+
+    phi_mat = stats.norm.pdf(M_diff / (sigma * jnp.sqrt(dt_diff))) / (sigma * jnp.sqrt(dt_diff))
+    flux_mat = -v_n + M_diff / dt_diff
+    psi_mat = 0.5 * phi_mat * flux_mat
+
     indices = jnp.arange(num_steps)
 
-    # Precompute full lower-triangular kernel matrix — vectorized, outside scan
-    t_n = t_grid[:, None]           # (N, 1)
-    t_i = t_grid[None, :]           # (1, N)
-    dt_diff = jnp.maximum(t_n - t_i, 1e-10)
-    M_diff = M[:, None] - M[None, :]
-    K_mat = stats.norm.cdf(M_diff / (sigma * jnp.sqrt(dt_diff)))
-    K_mat = jnp.tril(K_mat, k=-1)  # zero diagonal and upper triangle
-
     def scan_fn(g_array, n):
-        prev_sum = jnp.dot(g_array, K_mat[n]) * dt
-
-        # Solve for g(t_n): K(t_n, t_n) = 0.5
-        g_n = (h[n] - prev_sum) / (dt * 0.5)
+        g_n = h0[n] + 2.0 * dt * jnp.dot(g_array, psi_mat[n])
         g_n = jnp.maximum(g_n, 0.0)
-
         g_array = g_array.at[n].set(g_n)
         return g_array, g_n
 
@@ -127,13 +123,6 @@ def crdm_volterra_log_pdf_sf(rt, v_c, amp, tau, s, b, t0, dt, num_steps):
 
     log_pdf = jnp.log(jnp.maximum(g_at_rt, 1e-30))
     log_sf = jnp.log(jnp.maximum(1.0 - G_at_rt, 1e-30))
-
-    # Steep penalty for impossible observations (rt <= t0)
-    # _log_floor = jnp.log(1e-12)
-    # valid = rt_shifted > dt
-    # penalty = _log_floor + 1e3 * jnp.minimum(rt_shifted - dt, 0.0)
-    # log_pdf = jnp.where(valid, log_pdf, penalty)
-    # log_sf = jnp.where(valid, log_sf, 0.0)
 
     return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 

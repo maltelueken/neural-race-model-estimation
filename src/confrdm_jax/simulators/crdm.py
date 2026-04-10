@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from .base import TruncatedNormal
-from .crdm_utils import gamma_pulse
+from .crdm_utils import normalized_gamma_derivative
 from .crdm_utils import simulate_crdm_single_trial
 
 
@@ -29,7 +29,7 @@ def simulate_crdm_dataset(
 
     t = jnp.arange(dt, t_max + dt, dt)
 
-    v_a = gamma_pulse(t, jnp.abs(amp), tau, a_shape)
+    v_a = normalized_gamma_derivative(t, jnp.abs(amp), tau, a_shape)
 
     mu = jnp.tile(mu_c, (t.shape[0], 1)).T
 

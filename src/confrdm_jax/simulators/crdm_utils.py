@@ -4,11 +4,15 @@ import jax
 import jax.numpy as jnp
 
 
-def gamma_pulse(x, amp, tau, a_shape):
+def normalized_gamma(x, amp, tau, a_shape):
     return (amp
         * jnp.exp(-x / tau)
         * (jnp.exp(1) * x / (a_shape - 1) / tau) ** (a_shape - 1)
-    ) * ((a_shape - 1) / x - 1 / tau)
+    )
+
+
+def normalized_gamma_derivative(x, amp, tau, a_shape):
+    return normalized_gamma(x, amp, tau, a_shape) * ((a_shape - 1) / x - 1 / tau)
 
 
 @jax.jit
