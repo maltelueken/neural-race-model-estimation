@@ -131,6 +131,7 @@ class HierarchicalRDMPriorLKJMVN:
         self,
         num_subjects,
         num_params,
+        num_centered=2,
         lkj_concentration=2.0,
         inverse_gamma_scale=None,
         mu_loc=None,
@@ -138,8 +139,11 @@ class HierarchicalRDMPriorLKJMVN:
     ):
         self.num_subjects = num_subjects
         self.num_params = num_params
-        # Non-centered parameterization covers all params except b (index -2) and t0 (index -1)
-        self.num_params_ncp = num_params - 2
+        # The trailing ``num_centered`` params use the centered parameterization
+        # (theta_bt); the remaining leading params are non-centered (z). Defaults to
+        # the last two (b, t0) for backward compatibility.
+        self.num_centered = num_centered
+        self.num_params_ncp = num_params - num_centered
         num_params_ncp = self.num_params_ncp
 
         inverse_gamma_scale = jnp.asarray(inverse_gamma_scale)
@@ -159,10 +163,10 @@ class HierarchicalRDMPriorLKJMVN:
             # Full Cholesky factor L = diag(s) @ psi_raw, shape (P, P)
             L = s[:, None] * psi_raw
             # Bottom-left block couples z_ncp to the conditional mean of theta_bt
-            L_21 = L[num_params_ncp:, :num_params_ncp]  # (2, P_ncp)
+            L_21 = L[num_params_ncp:, :num_params_ncp]  # (num_centered, P_ncp)
             # Bottom-right block is the Cholesky of the residual variance for theta_bt
-            L_22 = L[num_params_ncp:, num_params_ncp:]  # (2, 2)
-            # Conditional mean: mu_bt + z @ L_21^T, shape (S, 2)
+            L_22 = L[num_params_ncp:, num_params_ncp:]  # (num_centered, num_centered)
+            # Conditional mean: mu_bt + z @ L_21^T, shape (S, num_centered)
             cond_mean = mu[num_params_ncp:] + jnp.einsum('nk,jk->nj', z, L_21)
             return tfd.Independent(
                 tfd.MultivariateNormalTriL(loc=cond_mean, scale_tril=L_22),
@@ -235,7 +239,7 @@ class HierarchicalRDMPriorLKJMVN:
         #   L = diag(s_mode) @ I  =>  L_21 (off-diagonal block) = 0
         #   cond_mean = mu_loc[P_ncp:] + einsum('nk,jk->nj', 0, L_21) = mu_loc[P_ncp:]
         theta_bt_mode = jnp.broadcast_to(
-            self._mu_loc[self.num_params_ncp:], (self.num_subjects, 2)
+            self._mu_loc[self.num_params_ncp:], (self.num_subjects, self.num_centered)
         )
 
         return {
