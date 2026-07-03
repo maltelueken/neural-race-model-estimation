@@ -47,6 +47,24 @@ mcmc:
   num_sampling: 1000
   num_chains: 4
 
+# Classifier two-sample test (neural vs. analytic recovery)
+c2st:
+  mode: single  # single | hierarchical
+  recovery_dir: .  # directory holding the recovery .nc files (relative to launch dir)
+  # For single mode: one recovery dir per number of trials. Each is run as a
+  # separate C2ST and the number of trials is read from the file. If empty,
+  # falls back to the single `recovery_dir` above.
+  single_recovery_dirs: []
+  approx_file: parameter_recovery_approx.nc
+  ref_file: parameter_recovery_ref.nc
+  hierarchical_approx_template: hierarchical_recovery_pop{pop}_approx.nc
+  hierarchical_ref_template: hierarchical_recovery_pop{pop}_ref.nc
+  output_file: c2st.csv
+  metric: accuracy
+  max_epochs: 1000
+  patience: 5
+  batch_size: 128
+
 # Hierarchical recovery settings
 hierarchical_recovery:
   num_subjects: 50
