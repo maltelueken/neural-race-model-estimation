@@ -1,2 +1,0 @@
-_target_: confrdm.adapters.create_nle_adapter_two_accumulators
-param_names: ["v_c_intercept", "v_c_slope", "tau", "amp", "s_true", "b", "t0"]

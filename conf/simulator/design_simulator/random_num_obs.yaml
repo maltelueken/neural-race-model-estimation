@@ -1,8 +1,0 @@
-_target_: bayesflow.simulators.LambdaSimulator
-sample_fn:
-  _target_: confrdm.utils.sample_random_num_obs
-  _partial_: true
-  rng:
-    _target_: numpy.random.default_rng
-    seed: ${seed}
-is_batched: true

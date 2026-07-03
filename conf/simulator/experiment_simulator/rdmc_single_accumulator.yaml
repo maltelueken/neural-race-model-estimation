@@ -1,7 +1,0 @@
-_target_: bayesflow.simulators.LambdaSimulator
-sample_fn:
-  _target_: confrdm.simulators.rdmc.simulate_rdmc_single_accumulator
-  _partial_: true
-  a_shape: 2.0
-  t_max: 5000
-  
