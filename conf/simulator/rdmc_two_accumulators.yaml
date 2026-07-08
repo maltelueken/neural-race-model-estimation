@@ -1,6 +1,0 @@
-defaults:
-- design_simulator: random_num_obs
-- prior_simulator: rdmc_two_accumulators
-- experiment_simulator: rdmc_two_accumulators
-
-_target_: confrdm.simulators.custom.CustomSimulator

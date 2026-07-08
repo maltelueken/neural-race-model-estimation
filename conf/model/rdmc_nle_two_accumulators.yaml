@@ -1,5 +1,0 @@
-# @package _global_
-
-defaults:
-- override /simulator: rdmc_two_accumulators
-- override /approximator/adapter: rdmc_nle_two_accumulators

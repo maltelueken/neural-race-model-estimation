@@ -4,9 +4,7 @@ from typing import Tuple
 import distrax
 import jax
 import jax.numpy as jnp
-from tensorflow_probability.substrates.jax import distributions
-
-from .base import TruncatedNormal
+from tensorflow_probability.substrates.jax import distributions as tfd
 
 
 def create_rdm_prior_informed(
@@ -22,11 +20,11 @@ def create_rdm_prior_informed(
     t0_scale: float = 0.2,
 ) -> distrax.Joint:
     return distrax.Joint([
-        TruncatedNormal(v_intercept_loc, v_intercept_scale, 0.0, jnp.inf),
-        TruncatedNormal(v_scale_loc, v_scale_scale, 0.0, jnp.inf),
+        tfd.TruncatedNormal(v_intercept_loc, v_intercept_scale, 0.0, jnp.inf),
+        tfd.TruncatedNormal(v_scale_loc, v_scale_scale, 0.0, jnp.inf),
         distrax.Gamma(s_true_shape, 1.0 / s_true_scale),
         distrax.Gamma(b_shape, 1.0 / b_scale),
-        TruncatedNormal(t0_loc, t0_scale, 0.0, jnp.inf),
+        tfd.TruncatedNormal(t0_loc, t0_scale, 0.0, jnp.inf),
     ])
 
 
@@ -46,7 +44,7 @@ def simulate_rdm(
     mu = b / v
     lam = (b / s) ** 2
 
-    fpt = distributions.InverseGaussian(mu, lam).sample(batch_shape, key)
+    fpt = tfd.InverseGaussian(mu, lam).sample(batch_shape, key)
 
     resp = jnp.argmin(fpt, axis=1)
     rt = jnp.min(fpt, axis=1) + t0

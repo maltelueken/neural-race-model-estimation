@@ -1,21 +1,21 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from confrdm_jax.simulators import gamma_pulse
+from confrdm_jax.simulators import normalized_gamma_derivative
 from confrdm_jax.simulators import simulate_crdm_single_trial
 
 
 class TestGammaPulse:
     def test_pulse_shape(self):
         t = jnp.linspace(0.01, 1.0, 100)
-        pulse = gamma_pulse(t, amp=0.3, tau=0.1, a_shape=2.0)
+        pulse = normalized_gamma_derivative(t, amp=0.3, tau=0.1, a_shape=2.0)
 
         assert pulse.shape == t.shape
         assert jnp.all(jnp.isfinite(pulse))
 
     def test_pulse_decays_to_zero(self):
         t = jnp.linspace(0.01, 2.0, 1000)
-        pulse = gamma_pulse(t, amp=0.3, tau=0.1, a_shape=2.0)
+        pulse = normalized_gamma_derivative(t, amp=0.3, tau=0.1, a_shape=2.0)
 
         # Pulse should decay toward zero at large t
         early_magnitude = jnp.abs(pulse[:100]).max()
@@ -24,16 +24,16 @@ class TestGammaPulse:
 
     def test_pulse_amplitude_scaling(self):
         t = jnp.linspace(0.01, 1.0, 100)
-        pulse1 = gamma_pulse(t, amp=0.3, tau=0.1, a_shape=2.0)
-        pulse2 = gamma_pulse(t, amp=0.6, tau=0.1, a_shape=2.0)
+        pulse1 = normalized_gamma_derivative(t, amp=0.3, tau=0.1, a_shape=2.0)
+        pulse2 = normalized_gamma_derivative(t, amp=0.6, tau=0.1, a_shape=2.0)
 
         # Doubling amplitude should double the pulse
         assert jnp.allclose(pulse2, 2.0 * pulse1)
 
     def test_pulse_different_tau(self):
         t = jnp.linspace(0.01, 2.0, 500)
-        pulse_fast = gamma_pulse(t, amp=0.3, tau=0.05, a_shape=2.0)
-        pulse_slow = gamma_pulse(t, amp=0.3, tau=0.4, a_shape=2.0)
+        pulse_fast = normalized_gamma_derivative(t, amp=0.3, tau=0.05, a_shape=2.0)
+        pulse_slow = normalized_gamma_derivative(t, amp=0.3, tau=0.4, a_shape=2.0)
 
         # Different tau should produce different pulse shapes
         # The pulse with smaller tau should decay faster

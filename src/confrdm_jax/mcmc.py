@@ -8,13 +8,13 @@ def inference_loop_multiple_chains(
     @jax.jit
     def one_step(states, rng_key):
         keys = jax.random.split(rng_key, num_chains)
-        states, _ = jax.vmap(kernel)(keys, states)
-        return states, states
+        states, infos = jax.vmap(kernel)(keys, states)
+        return states, (states.position, infos)
 
     keys = jax.random.split(rng_key, num_samples)
-    _, states = jax.lax.scan(one_step, initial_state, keys)
+    _, (positions, infos) = jax.lax.scan(one_step, initial_state, keys)
 
-    return states
+    return positions, infos
 
 
 def warmup(sampler_fun, logdensity_fun, init_position, num_steps, rng_key, **kwargs):

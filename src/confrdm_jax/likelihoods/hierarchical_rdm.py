@@ -1,0 +1,114 @@
+import jax
+import jax.numpy as jnp
+from flax import nnx
+
+from confrdm_jax.flows import evaluate_pdf_sf
+from .rdm import _clamp_log
+from .rdm import _penalize_invalid_rt
+from .rdm import inv_gauss_log_pdf_sf
+
+
+_FLOOR = 1e-10
+
+
+def create_rdm_hierarchical_likelihood(data, mask):
+    """Hierarchical analytical likelihood for multi-subject RDM.
+
+    Args:
+        data: Padded trial data, shape (S, max_trials, 2) with columns [RT, choice].
+        mask: Boolean mask, shape (S, max_trials). True for real trials.
+        num_params: Number of per-subject RDM parameters (default 5).
+        num_pop_params: Number of population-level parameters in the flat vector (default 8).
+
+    Returns:
+        A JIT-compiled function `likelihood_fun(x)` that takes a flat parameter vector
+        and returns a scalar total log-likelihood across all subjects and trials.
+    """
+
+    def _single_subject_ll(subject_data, subject_mask, subject_params):
+        """Compute per-trial log-likelihoods for one subject."""
+        rt = subject_data[:, 0]
+        choice = subject_data[:, 1]
+
+        x = jnp.exp(subject_params)
+        v_c_true = x[0] + x[1]
+        v_c_false = x[0]
+        s_true = x[2]
+        s_false = 1.0
+        b = x[3]
+        t0 = x[4]
+
+        log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
+        log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
+
+        dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+        dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+
+        ll = jnp.where(choice == 1, dens_true, dens_false)
+
+        return jnp.sum(jnp.where(subject_mask, ll, 0.0))
+
+    _vmapped_ll = jax.vmap(_single_subject_ll, in_axes=(0, 0, 0))
+
+    @jax.jit
+    def likelihood_fun(x):
+        return jnp.sum(_vmapped_ll(data, mask, x))
+
+    return likelihood_fun
+
+
+def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
+    """Factory for hierarchical neural-approximate likelihood for multi-subject RDM.
+
+    Args:
+        conditioner: Trained neural network conditioner for density estimation.
+        num_params: Number of per-subject RDM parameters (default 5).
+        num_pop_params: Number of population-level parameters in the flat vector (default 8).
+
+    Returns:
+        A function `create_likelihood(data, mask)` that returns a likelihood function.
+    """
+    def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
+        rt_shifted = rt - t0
+        rt_safe = jnp.maximum(rt_shifted, _FLOOR)
+
+        v = jnp.maximum(v, _FLOOR)
+        s = jnp.maximum(s, _FLOOR)
+        b = jnp.maximum(b, _FLOOR)
+
+        log_pdf, log_sf = evaluate_pdf_sf(conditioner, rt_safe, jnp.array([v, s, b]))
+        return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
+
+    def create_likelihood(data, mask):
+        def _single_subject_ll(subject_data, subject_mask, subject_params):
+            """Compute per-trial log-likelihoods for one subject."""
+            rt = subject_data[:, 0]
+            choice = subject_data[:, 1]
+
+            x = jnp.exp(subject_params)
+            v_true = x[0] + x[1]
+            v_false = x[0]
+            s_true = x[2]
+            s_false = 1.0
+            b = x[3]
+            t0 = x[4]
+
+            log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf_approx(rt, v_true, s_true, b, t0)
+            log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf_approx(rt, v_false, s_false, b, t0)
+
+            dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
+            dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+
+            ll = jnp.where(choice == 1, dens_true, dens_false)
+
+            return jnp.sum(jnp.where(subject_mask, ll, 0.0))
+
+        _vmapped_ll = jax.vmap(_single_subject_ll, in_axes=(0, 0, 0))
+
+        @nnx.jit
+        def likelihood_fun(x):
+            return jnp.sum(_vmapped_ll(data, mask, x))
+
+        return likelihood_fun
+
+    return create_likelihood

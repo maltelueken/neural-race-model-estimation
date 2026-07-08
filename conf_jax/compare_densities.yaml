@@ -1,0 +1,46 @@
+# @package _global_
+
+hydra:
+  run:
+    dir: outputs/compare_densities
+  job:
+    chdir: False
+    env_set:
+      JAX_ENABLE_X64: "true"
+
+wald:
+  # set to path string to enable Wald comparison
+  conditioner_path: outputs/rdm/model.num_bins=12/model.num_mid=128/optimizer=adam_cosine_decay/train_steps=500000/conditioner
+  num_bins: 12
+  num_mid: 128
+  param_values:
+    v: [0.5, 1.5, 2.5, 4.0, 8.0]
+    s: [0.5, 1.0, 3.0]
+    b: [0.5, 1.0, 3.0]
+
+crdm:
+  num_bins: 12
+  num_mid: 128
+  conditioners: [  # list of {dt: float, path: str}
+    {
+      dt: 0.05,
+      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.05/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+    },
+    {
+      dt: 0.005,
+      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+    },
+    {
+      dt: 0.0005,
+      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+    }
+  ]
+  param_values:
+    v: [0.5, 1.5, 2.5, 4.0, 8.0]
+    s: [0.5, 1.0, 3.0]
+    b: [0.5, 1.0, 3.0]
+    amp: [0.1, 0.3, 0.5]
+    tau: [0.05, 0.1, 0.15, 0.3]
+
+evaluation:
+  chunk_size: 1
