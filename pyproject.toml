@@ -23,13 +23,30 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "arviz",
     "bayesflow",
     "blackjax",
+    "distrax",
+    "flax",
+    "hydra-core",
     "jax",
+    "jax2onnx",
     "keras",
-    "numba",
+    "matplotlib",
+    "netcdf4",
+    "numpy",
+    "omegaconf",
+    "onnx",
+    "onnxruntime",
+    "orbax-checkpoint",
+    "polars",
+    "scipy",
+    "seaborn",
+    "tensorflow-probability",
+    "tqdm",
+    "xarray",
 ]
-description = "A Python implementation of the Racing Diffusion Model for Conflict Tasks"
+description = "A JAX implementation for estimating the Conflict Racing Diffusion Model"
 keywords = [""]
 license = {file = "LICENSE"}
 name = "confrdm"
@@ -54,10 +71,6 @@ publishing = [
 [project.urls]
 Repository = "https://github.com/maltelueken/racing-diffusion-conflict/confrdm"
 Issues = "https://github.com/maltelueken/racing-diffusion-conflict/confrdm/issues"
-
-
-
-
 
 [tool.tox]
 legacy_tox_ini = """
@@ -106,16 +119,3 @@ pydocstyle.convention = "google"
 known-first-party = ["confrdm"]
 force-single-line = true
 no-lines-before = ["future","standard-library","third-party","first-party","local-folder"]
-
-[tool.bumpversion]
-current_version = "0.0.1"
-
-[[tool.bumpversion.files]]
-filename = "src/confrdm/__init__.py"
-
-[[tool.bumpversion.files]]
-filename = "pyproject.toml"
-
-
-
-
