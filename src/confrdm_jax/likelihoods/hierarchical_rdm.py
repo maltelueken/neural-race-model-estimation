@@ -1,9 +1,10 @@
+"""Hierarchical racing diffusion model."""
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
-from .rdm import _clamp_log
 from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
@@ -41,8 +42,9 @@ def create_rdm_hierarchical_likelihood(data, mask):
         log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
         log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
 
-        dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
-        dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+        # Already clamped/penalised upstream; see _penalize_invalid_rt.
+        dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
+        dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
 
         ll = jnp.where(choice == 1, dens_true, dens_false)
 
@@ -96,8 +98,9 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
             log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf_approx(rt, v_true, s_true, b, t0)
             log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf_approx(rt, v_false, s_false, b, t0)
 
-            dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
-            dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+            # Already clamped/penalised upstream; see _penalize_invalid_rt.
+            dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
+            dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
 
             ll = jnp.where(choice == 1, dens_true, dens_false)
 

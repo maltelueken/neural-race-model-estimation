@@ -1,9 +1,10 @@
+"""Hierarchical conflict diffusion model."""
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
-from .rdm import _clamp_log
 from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
@@ -69,11 +70,13 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
             # Analytic inverse Gaussian for the other accumulator
             ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt, ig_v_c, ig_s, b, t0)
 
-            # Clamp all log-density outputs upstream to avoid NaN gradient poisoning
-            nn_log_pdf_c = _clamp_log(nn_log_pdf.squeeze())
-            nn_log_sf_c = _clamp_log(nn_log_sf.squeeze())
-            ig_log_pdf_c = _clamp_log(ig_log_pdf.squeeze())
-            ig_log_sf_c = _clamp_log(ig_log_sf.squeeze())
+            # Both branches are already clamped and penalised by
+            # _penalize_invalid_rt; clamping again here would erase the
+            # rt <= t0 penalty gradient.
+            nn_log_pdf_c = nn_log_pdf.squeeze()
+            nn_log_sf_c = nn_log_sf.squeeze()
+            ig_log_pdf_c = ig_log_pdf.squeeze()
+            ig_log_sf_c = ig_log_sf.squeeze()
 
             # Result routing
             log_pdf_true = jnp.where(condition == 1, nn_log_pdf_c, ig_log_pdf_c)

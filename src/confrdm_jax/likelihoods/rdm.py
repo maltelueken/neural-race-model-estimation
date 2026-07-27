@@ -1,3 +1,5 @@
+"""Racing diffusion model."""
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -21,25 +23,33 @@ def _clamp_log(x):
 
 
 def _penalize_invalid_rt(rt_shifted, log_pdf, log_sf):
-    """Replace log-densities with a steep penalty when rt <= t0.
+    """Clamp valid log-densities and apply a steep penalty when rt <= t0.
 
     For trials where rt - t0 <= 0, the observation is impossible under
     the model.  Instead of returning a flat floor (zero gradient), we
     return a linear penalty whose gradient pushes t0 below the minimum
     observed RT.
 
+    This function owns *both* halves of the correction, and the order matters:
+    ``_clamp_log`` is applied to the valid branch only, before the penalty is
+    substituted in.  The penalty is by construction <= ``_LOG_FLOOR``, so any
+    clamping applied *after* this function would floor it back to the constant
+    and destroy exactly the gradient it exists to provide.  Callers must
+    therefore not clamp the values returned here.
+
     Args:
         rt_shifted: rt - t0 (before clamping).
-        log_pdf: Log-PDF computed on clamped rt.
-        log_sf: Log-SF computed on clamped rt.
+        log_pdf: Raw log-PDF computed on clamped rt; may be NaN or -inf.
+        log_sf: Raw log-SF computed on clamped rt; may be NaN or -inf.
 
     Returns:
-        Corrected (log_pdf, log_sf) with steep penalty for invalid trials.
+        Corrected (log_pdf, log_sf), clamped where the trial is valid and
+        carrying the steep penalty where it is not.
     """
     valid = rt_shifted > _FLOOR
     penalty = _LOG_FLOOR + 1e3 * jnp.minimum(rt_shifted - _FLOOR, 0.0)
-    log_pdf = jnp.where(valid, log_pdf, penalty)
-    log_sf = jnp.where(valid, log_sf, 0.0)
+    log_pdf = jnp.where(valid, _clamp_log(log_pdf), penalty)
+    log_sf = jnp.where(valid, _clamp_log(log_sf), 0.0)
     return log_pdf, log_sf
 
 @jax.jit
@@ -102,8 +112,10 @@ def create_rdm_two_accumulators_likelihood(data):
         log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
         log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
 
-        dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
-        dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+        # Already clamped/penalised by inv_gauss_log_pdf_sf; clamping again here
+        # would erase the rt <= t0 penalty gradient.
+        dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
+        dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
 
         return jnp.where(choice == 1, dens_true, dens_false)
 
@@ -147,8 +159,9 @@ def create_rdm_likelihood_factory_approx(conditioner):
             log_pdf_true, log_sf_true = inv_gauss_log_pdf_sf_approx(rt, v_true, s_true, b, t0)
             log_pdf_false, log_sf_false = inv_gauss_log_pdf_sf_approx(rt, v_false, s_false, b, t0)
 
-            dens_true = _clamp_log(log_pdf_true.squeeze()) + _clamp_log(log_sf_false.squeeze())
-            dens_false = _clamp_log(log_pdf_false.squeeze()) + _clamp_log(log_sf_true.squeeze())
+            # Already clamped/penalised upstream; see _penalize_invalid_rt.
+            dens_true = log_pdf_true.squeeze() + log_sf_false.squeeze()
+            dens_false = log_pdf_false.squeeze() + log_sf_true.squeeze()
 
             return jnp.where(choice == 1, dens_true, dens_false)
 

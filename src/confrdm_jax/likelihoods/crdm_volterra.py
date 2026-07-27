@@ -1,11 +1,11 @@
 """CRDM likelihood via Volterra integral equation for first-passage time density.
 
-Solves the Fortet–Smith integral equation of the second kind numerically to compute
+Solves the Volterra integral equation of the second kind numerically to compute
 the FPT density of a diffusion process with time-varying drift (gamma-pulse conflict
 signal) through a constant upper boundary.
 
-Reference implementation: integral.py (Richter, Ulrich & Janczyk).
-Mathematical derivation: VOLTERRA.md.
+Adapted from: integral.py (Richter, Ulrich & Janczyk, 2015).
+
 """
 
 from functools import partial
@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from jax.scipy import stats
 
 from confrdm_jax.simulators.crdm_utils import normalized_gamma, normalized_gamma_derivative
-from .rdm import inv_gauss_log_pdf_sf, _clamp_log, _penalize_invalid_rt
+from .rdm import inv_gauss_log_pdf_sf, _penalize_invalid_rt
 
 def integrated_drift(t, v_c, amp, tau, a_shape=2.0):
     return v_c * t + normalized_gamma(t, amp, tau, a_shape)
@@ -149,7 +149,7 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
     num_steps = int(t_max / dt)
 
     @jax.jit
-    def likelihood_fun(x, min_ll=1e-12):
+    def likelihood_fun(x):
         x = jnp.exp(x)
 
         v_c_true = x[0] + x[1]
@@ -183,12 +183,11 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
         log_pdf_false = jnp.where(condition == 1, ig_log_pdf_false, inc_log_pdf)
         log_sf_false = jnp.where(condition == 1, ig_log_sf_false, inc_log_sf)
 
-        # Racing likelihood: pdf(winner) * sf(loser)
-        dens_choice_1 = _clamp_log(log_pdf_true) + _clamp_log(log_sf_false)
-        dens_choice_0 = _clamp_log(log_pdf_false) + _clamp_log(log_sf_true)
+        # Racing likelihood: pdf(winner) * sf(loser).
+        # Already clamped/penalised upstream; see _penalize_invalid_rt.
+        dens_choice_1 = log_pdf_true + log_sf_false
+        dens_choice_0 = log_pdf_false + log_sf_true
 
-        ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
-
-        return jnp.where(jnp.isfinite(ll), ll, jnp.log(min_ll))
+        return jnp.where(choice == 1, dens_choice_1, dens_choice_0)
 
     return likelihood_fun
