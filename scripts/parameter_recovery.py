@@ -13,7 +13,7 @@ from hydra.utils import instantiate
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.flows import load_conditioner
 from confrdm_jax.mcmc import inference_loop_multiple_chains
-from confrdm_jax.mcmc import warmup
+from confrdm_jax.mcmc import warmup_multiple_chains
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,25 @@ jax.config.update('jax_enable_x64', True)
 
 # Column names for observed data; RDM has 2 cols, CRDM has 3.
 _DATA_COL_NAMES = ["rt", "choice", "condition"]
+
+
+def _overdispersed_init(rng_key, prior, num_chains, min_rt):
+    """Draw one starting position per chain, dispersed but inside the support.
+
+    Prior draws supply the dispersion for every parameter except `t0`, which
+    cannot be treated the same way: the likelihood is undefined for
+    `t0 >= min(rt)` and the penalty branch there has a gradient of order 1e3,
+    so a chain started above the boundary diverges on every step and never
+    recovers. Measured: perturbing all five parameters alike gives 1001/1000
+    divergences and ESS 7 (CONFRDM_JAX.md §8.4).
+
+    `t0` is therefore spread deterministically across the interval it is
+    actually confined to. It is the last parameter by the ordering contract in
+    CONFRDM_JAX.md §2.
+    """
+    draws = jnp.stack(prior.sample(seed=rng_key, sample_shape=(num_chains,)), axis=1)
+    t0_fraction = jnp.linspace(0.2, 0.8, num_chains)
+    return jnp.log(draws.at[:, -1].set(t0_fraction * min_rt))
 
 
 def _build_recovery_datatree(samples, data, true_params, prior_ds, param_names):
@@ -132,35 +151,48 @@ def main(cfg):
     likelihood_factory_approx = instantiate(cfg["model"]["likelihood_factory_approx"])(conditioner)
 
     def recover_dataset(sampling_key, data, create_likelihood_fun):
-        init_position = jnp.array(prior.mode(), dtype=jnp.float64)
         # Censored trials carry the sentinel rt = -1.0.  Taking the raw minimum
         # would initialise t0 negative and `jnp.log` it to NaN, silently
         # poisoning the whole chain, so initialise from valid RTs only.
         rt = data[:, 0]
         min_rt = jnp.min(jnp.where(rt > 0.0, rt, jnp.inf))
-        init_position = init_position.at[-1].set(min_rt / 2)
 
         likelihood_fun = create_likelihood_fun(data)
 
         def logdensity_fun(x):
             return log_prior(x) + jnp.sum(likelihood_fun(x))
 
-        sampling_key, warmup_key = jax.random.split(sampling_key)
+        num_chains = cfg["mcmc"]["num_chains"]
 
-        kernel, last_state, _ = warmup(
+        sampling_key, warmup_key, init_key = jax.random.split(sampling_key, 3)
+
+        init_positions = _overdispersed_init(init_key, prior, num_chains, min_rt)
+
+        # One window adaptation per chain, so the starts are dispersed *and*
+        # converged and R-hat measures between-chain disagreement rather than
+        # Monte-Carlo noise.  See CONFRDM_JAX.md §8.
+        last_states, kernel_params = warmup_multiple_chains(
             blackjax.nuts,
             logdensity_fun,
-            jnp.log(init_position),
+            init_positions,
             cfg["mcmc"]["num_warmup"],
             warmup_key,
         )
 
-        num_chains = cfg["mcmc"]["num_chains"]
+        # Each chain carries its own step size and mass matrix, so the kernel
+        # takes them per call instead of having them bound up front.
+        nuts_kernel = blackjax.nuts.build_kernel()
 
-        last_states = jax.vmap(lambda _: last_state)(jnp.arange(num_chains))
+        def kernel(key, state, params):
+            return nuts_kernel(key, state, logdensity_fun, **params)
 
         positions, _ = inference_loop_multiple_chains(
-            sampling_key, kernel, last_states, cfg["mcmc"]["num_sampling"], num_chains,
+            sampling_key,
+            kernel,
+            last_states,
+            cfg["mcmc"]["num_sampling"],
+            num_chains,
+            kernel_params,
         )
 
         return jnp.exp(positions)
