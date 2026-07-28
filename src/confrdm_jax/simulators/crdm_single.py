@@ -108,7 +108,7 @@ def sample_conditional_crdm_single(
     dt: float,
     t_max: float,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    key_context, key_data, key_jitter = jax.random.split(key, 3)
+    key_context, key_data = jax.random.split(key, 2)
 
     prior_shape = batch_shape[:-1]
 
@@ -128,9 +128,9 @@ def sample_conditional_crdm_single(
         t_max,
     )
 
-    dt_half = dt / 2.0
-
-    x = x + jax.random.uniform(key_jitter, x.shape, minval=-dt_half, maxval=dt_half)
+    # No dequantisation jitter here: `simulate_crdm_single_trial` already draws
+    # the crossing time uniformly within the step it was detected in, which is
+    # both continuous and correctly centred.
 
     context = jnp.expand_dims(jnp.array(context), axis=-1)
     context = jnp.moveaxis(jnp.array(context), 0, -1)
