@@ -1,3 +1,12 @@
+"""Multi-subject CRDM with a semi-centered hierarchical prior.
+
+The CRDM counterpart of ``hierarchical_rdm.py``, sharing its prior class and
+its reconstruction convention; see that module's docstring for the
+semi-centered parameterisation.  The only differences are the parameter count
+(7 rather than 5) and that trials are simulated by Euler-Maruyama, split evenly
+between congruent and incongruent conditions.
+"""
+
 import jax
 import jax.numpy as jnp
 
@@ -45,7 +54,15 @@ def sample_conditional_crdm_hierarchical_lkj_mvn(
 ):
     """Draw one population from the prior and simulate CRDM data for it.
 
-    Half the trials are congruent (``+amp``) and half incongruent (``-amp``).
+    Half the trials are congruent (``+amp``) and half incongruent (``-amp``),
+    congruent first — trial order is not randomised.
+
+    Note:
+        Exactly ``2 * (num_trials // 2)`` trials are produced, so an **odd**
+        `num_trials` yields one fewer trial than asked for. The caller in
+        ``scripts/parameter_recovery_hierarchical.py`` builds its mask as
+        ``jnp.ones((num_subjects, num_trials))`` and would raise a shape error;
+        keep `num_trials` even.
 
     Returns:
         ``(data, context)``. `data` has shape ``(S, num_trials, 3)`` with

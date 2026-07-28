@@ -1,3 +1,29 @@
+"""Multi-subject RDM with a semi-centered hierarchical prior.
+
+Subject-level log-parameters are drawn from a multivariate normal whose
+covariance is factorised as ``diag(s) @ psi_raw``, with ``psi_raw`` an LKJ
+Cholesky correlation factor.  Correlations between parameters are therefore
+estimated rather than assumed away — plausible here, since e.g. boundary and
+drift trade off against one another across people.
+
+The parameterisation is *semi*-centered: the leading parameters are
+non-centered (sampled as standard-normal offsets ``z`` and reconstructed as
+``mu + z @ L^T``) while the trailing two, ``b`` and ``t0``, are centered.  The
+funnel that non-centering avoids is worst for parameters the data constrains
+weakly; ``b`` and ``t0`` are the two the data pins down hardest per subject, so
+they sample better centered.
+
+The reconstruction from prior draw to subject parameters is written out three
+times — here, in the SMC likelihood wrapper, and in the postprocessing of
+``scripts/parameter_recovery_hierarchical.py``.  All three must agree; the
+shared block is::
+
+    L         = s[:, None] * psi_raw
+    L_ncp     = L[:P_ncp, :P_ncp]
+    theta_ncp = mu[:P_ncp] + einsum('nj,ij->ni', z, L_ncp)
+    log_theta = concat([theta_ncp, theta_bt], axis=-1)
+"""
+
 import jax
 import jax.numpy as jnp
 

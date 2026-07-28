@@ -1,3 +1,29 @@
+"""Hierarchical parameter recovery for a trained conditioner.
+
+Simulates whole *populations* from the hierarchical LKJ-MVN prior and fits each
+one as a single joint model over population-level and subject-level parameters
+at once.  Unlike ``parameter_recovery.py``, where each data set is an
+independent fit, here the subjects are tied together and shrinkage is part of
+what is being recovered.
+
+Inference is tempered SMC rather than NUTS.  The semi-centered hierarchical
+posterior has strong funnel geometry, and annealing a particle cloud from the
+prior copes with that better than a single chain; the cost is that the stored
+draws are particles, so what is called a "chain" here is an independent SMC
+run rather than a Markov chain.
+
+Sampling happens in a flat *unconstrained* space: prior draws are pushed
+through ``bijector.inverse`` and ravelled to a vector, and mapped back for
+evaluation.  Two places therefore have to agree with the prior class about the
+semi-centered reconstruction — ``log_likelihood_fn_wrapped`` during sampling
+and ``_reconstruct_particle`` afterwards.
+
+Must be launched with the same overrides that produced the checkpoint::
+
+    python scripts/parameter_recovery_hierarchical.py model=rdm
+
+Writes ``hierarchical_recovery_pop{N}_approx.nc`` per population.
+"""
 
 import logging
 from pathlib import Path
@@ -58,7 +84,22 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
 
 
 def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
-    """Map one flat unconstrained particle → (mu, s, log_theta)."""
+    """Map one flat unconstrained particle → (mu, s, log_theta).
+
+    Undoes the flatten-and-unconstrain that ``sample_prior_particles`` applies,
+    then rebuilds subject-level log-parameters from the semi-centered
+    parameterisation: the leading `num_params_ncp` parameters come from the
+    standard-normal offsets ``z`` scaled by the covariance Cholesky, the
+    trailing ones are already on the parameter scale in ``theta_bt``.
+
+    This is the same reconstruction as ``log_likelihood_fn_wrapped`` and as the
+    hierarchical simulators; all of them must agree or the recovered parameters
+    will not be the ones the data were generated from.
+
+    Returns:
+        ``(mu, s, log_theta)`` with shapes ``(P,)``, ``(P,)`` and ``(S, P)``,
+        all still in **log** space for the parameters themselves.
+    """
     unconstrained = unravel_fn(flat_particle)
     params = bijector.forward(unconstrained)
     L = params['s'][:, None] * params['psi_raw']                    # (P, P)
@@ -97,6 +138,20 @@ def _build_population_datatree(
     - ``observed_data``— RT, choice (and condition for CRDM) per subject/trial
     - ``constant_data``— true parameters for recovery assessment
 
+    Warning:
+        ``mu`` is **not on the same scale in both groups**. The posterior
+        stores ``exp(mu)`` (natural scale, matching the subject-level
+        variables) while ``constant_data`` stores raw log-space ``mu``, so
+        anything comparing the two must exponentiate the truth first —
+        ``notebooks/create_figures_parameter_recovery_hierarchical.ipynb``
+        does exactly that. ``sigma`` is log-space in both and needs no such
+        correction, since it is a standard deviation *of* log-parameters.
+        Subject-level parameters are the well-behaved case: ``constant_data``
+        carries both ``log_theta`` and ``theta``, named for their scales.
+        Changing this is a file-format break — the notebook's compensating
+        ``exp`` would then double-apply — so it is documented rather than
+        fixed.
+
     Args:
         particles: Resampled SMC particles, equally weighted, shape
             ``(num_chains, num_particles, num_flat_params)``.
@@ -104,7 +159,9 @@ def _build_population_datatree(
             **Diagnostic only** — they do not index `particles`, which have
             already been resampled against them. These are normalised *linear*
             weights, not logs. Their ESS says how far from uniform the last
-            tempering step left the cloud; see CONFRDM_JAX.md §10.
+            tempering step left the cloud, and correlates at −0.96 with how far
+            ignoring the weights would have moved the posterior — so it is the
+            per-run indicator of whether the final resample mattered.
         n_iter: Per-chain SMC iteration counts, shape ``(num_chains,)``.
         data: Observed data, shape ``(S, T, num_data_cols)``.
         context: Dict of true prior parameters from the sampler.
@@ -133,8 +190,12 @@ def _build_population_datatree(
 
     posterior_ds = az.dict_to_dataset(
         {
-            "mu":    np.exp(np.array(pop_mu)),   # population mean, original scale
-            "sigma": np.array(pop_s),            # population SD, log-space
+            # exp(mu): the population location on the natural scale (the
+            # median of the lognormal, not its mean).  NB constant_data["mu"]
+            # is *not* exponentiated — see the warning above.
+            "mu":    np.exp(np.array(pop_mu)),
+            # Between-subject SD of the log-parameters; stays in log space.
+            "sigma": np.array(pop_s),
             # Subject-level parameters: (chains, draws, S)
             **{name: np.exp(np.array(pop_log_theta[..., i]))
                for i, name in enumerate(param_names)},
@@ -168,6 +229,7 @@ def _build_population_datatree(
         {
             "log_theta": (["subject", "param"], np.array(log_theta_true)),
             "theta":     (["subject", "param"], np.array(jnp.exp(log_theta_true))),
+            # Log space, unlike posterior["mu"] — see the warning above.
             "mu":        (["param"], np.array(context["mu"])),
             "sigma":     (["param"], np.array(context["s"])),
         },
@@ -254,8 +316,12 @@ def main(cfg):
         Returns:
             ``(particles, weights, n_iter, initial_particles)``. `particles` are
             resampled against the final weights and so are equally weighted;
-            `weights` are retained as a diagnostic only (see CONFRDM_JAX.md §10).
-            All four carry a leading `num_chains` axis.
+            `weights` are retained as a diagnostic only. All four carry a
+            leading `num_chains` axis.
+
+        Chains run through ``jax.lax.map``, not ``vmap``, so they are
+        sequential and `num_chains` multiplies wall-clock time linearly. That
+        is also why giving each chain its own particle cloud costs nothing.
         """
 
         # log_prior_fn defined here so it can close over the per-population unravel_fn.
@@ -304,7 +370,10 @@ def main(cfg):
 
         # One window adaptation per chain.  target_acceptance_rate=0.8 avoids the
         # degenerate near-zero step sizes that 0.9 produces when the NLE
-        # posterior has high curvature.  See CONFRDM_JAX.md §8.6.
+        # posterior has high curvature.  Note the adaptation targets the
+        # lambda = 1 posterior but the step size is used from lambda = 0
+        # onward, where the target is the much broader prior — the degenerate
+        # step-size guard below is a symptom of that mismatch.
         _, adapted_params = warmup_multiple_chains(
             blackjax.nuts,
             logdensity_fn,  # Requires logdensity = logprior + loglikelihood
@@ -358,10 +427,17 @@ def main(cfg):
             # were never resampled away.  Storing the particles as if they were
             # equally weighted therefore reports the *penultimate* tempered
             # target, which is flatter than the posterior — an over-dispersion
-            # bias, not just noise (measured: weighted SD below raw SD in 80% of
-            # quantities, per-chain means off by up to 0.23 posterior SD).
-            # One systematic resample makes the stored draws genuinely uniform.
-            # See CONFRDM_JAX.md §10.
+            # bias, not just noise (measured over 7480 scalar quantities from
+            # 15 stored runs: weighted SD below raw SD in 80.2% of them,
+            # per-chain means off by up to 0.23 posterior SD).  One systematic
+            # resample makes the stored draws genuinely uniform.
+            #
+            # Resampling beats storing the weights and applying them
+            # downstream: ArviZ has no weighted-posterior support, so every
+            # notebook, R-hat and ESS computation would otherwise have to
+            # handle weights itself.  The cost is ordinary resampling noise,
+            # far smaller than the bias removed at the observed weight ESS
+            # (min 61%, median 91% of num_particles).
             idx = resampling.systematic(
                 resample_key, state.weights, smc_cfg["num_particles"],
             )

@@ -1,4 +1,20 @@
-"""Hierarchical racing diffusion model."""
+"""Hierarchical racing diffusion model likelihood.
+
+The per-trial density is exactly the single-subject one; what changes is the
+interface.  These factories take ``(data, mask)`` up front and return a
+function of subject-level log-parameters shaped ``(S, P)`` — not a flat vector
+— which is then ``vmap``ped over subjects and summed to a scalar.
+
+Population-level parameters never appear here.  The caller reconstructs
+``log_theta`` from ``(mu, s, psi_raw, z, theta_bt)`` and passes only the result,
+so the hierarchical structure lives entirely in the prior and in
+``scripts/parameter_recovery_hierarchical.py``.
+
+`mask` exists so subjects with differing trial counts can be padded to a
+rectangular array; masked trials contribute exactly 0 rather than being
+dropped, which keeps shapes static under ``jit``.  The current recovery script
+gives every subject the same number of trials and passes an all-true mask.
+"""
 
 import jax
 import jax.numpy as jnp

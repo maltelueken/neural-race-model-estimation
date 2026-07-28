@@ -1,4 +1,30 @@
-"""Racing diffusion model."""
+"""Racing diffusion model likelihoods, analytic and neural.
+
+**The racing likelihood.** With independent accumulators, observing that
+accumulator *i* finished at time ``t`` and the others had not yet finished
+gives ``p_i(t) * prod_{j != i} S_j(t)``, so every likelihood here is built from
+a density for the winner and survival functions for the losers.  In log space
+that is a sum, which is why each helper returns ``(log_pdf, log_sf)`` for a
+single accumulator and the callers combine them.
+
+Two implementations of those parts:
+
+- :func:`inv_gauss_log_pdf_sf` — exact, from the inverse Gaussian
+  first-passage density of a constant-drift diffusion.
+- :func:`create_rdm_likelihood_factory_approx` — the trained flow, exercised on
+  the same race structure. The RDM is the model where both exist, so it is
+  where the neural approximation gets validated against a reference posterior.
+
+**Parameters arrive in log space.** MCMC samples ``log theta``; every
+likelihood exponentiates on entry, and the corresponding Jacobian belongs to
+the prior (see ``log_prior`` in ``scripts/parameter_recovery.py``).  Parameter
+order is ``[v_intercept, v_slope, s_true, b, t0]``, positional and unenforced.
+
+**Numerical guarding.** Diffusion likelihoods are undefined for ``rt <= t0``
+and can underflow deep in the tails.  ``_clamp_log`` and
+``_penalize_invalid_rt`` handle both, and the ordering between them matters —
+see their docstrings before adding a clamp at any call site.
+"""
 
 import jax
 import jax.numpy as jnp
@@ -54,7 +80,17 @@ def _penalize_invalid_rt(rt_shifted, log_pdf, log_sf):
 
 @jax.jit
 def inv_gauss_logpdf(t, mu, lam):
+    """Log density of the inverse Gaussian at `t`.
 
+    The first-passage time of a diffusion with drift ``v`` and diffusion ``s``
+    through a boundary ``b`` is inverse Gaussian with ``mu = b / v`` and
+    ``lam = (b / s)^2``.
+
+    Written out rather than taken from a library so it stays differentiable and
+    free of data-dependent branching. Agrees with
+    ``scipy.stats.invgauss.logpdf`` to ~1e-13 over the parameter range used
+    here. `t` must be strictly positive; callers floor it.
+    """
     e = -(lam / (2 * t)) * (t**2 / mu**2 - 2 * t / mu  + 1)
 
     x = e + 0.5 * jnp.log(lam) - 0.5 * jnp.log(2 * t**3 * jnp.pi)
@@ -63,7 +99,18 @@ def inv_gauss_logpdf(t, mu, lam):
 
 @jax.jit
 def inv_gauss_logsf(t, mu, lam):
-    """https://journal.r-project.org/archive/2016-1/giner-smyth.pdf"""
+    """Log survival function of the inverse Gaussian — the losing accumulator's factor.
+
+    Uses the numerically stable form of Giner & Smyth (2016), *statmod:
+    Probability Calculations for the Inverse Gaussian Distribution*, R Journal
+    8(1) — https://journal.r-project.org/archive/2016-1/giner-smyth.pdf — which
+    works in the ``(mu / lam, t / lam)`` parameterisation and combines the two
+    normal-CDF terms through ``log1p`` so the far right tail does not
+    catastrophically cancel.
+
+    Matches ``scipy.stats.invgauss.logsf`` to ~1e-13, degrading to ~1e-8 only
+    for very large ``lam`` where the two terms are nearly equal.
+    """
     # Clamp inputs to avoid NaN from sqrt/division on non-positive values.
     mu = mu / lam
     t = t / lam
@@ -77,6 +124,25 @@ def inv_gauss_logsf(t, mu, lam):
 
 @jax.jit
 def inv_gauss_log_pdf_sf(rt, v, s, b, t0):
+    """Exact ``(log_pdf, log_sf)`` for one accumulator, guarded for MCMC.
+
+    Shifts by the non-decision time, floors the parameters away from zero so
+    the closed forms stay finite, and hands the result to
+    :func:`_penalize_invalid_rt`.
+
+    Args:
+        rt: Observed response times (not decision times).
+        v: Drift rate.
+        s: Diffusion coefficient.
+        b: Boundary.
+        t0: Non-decision time.
+
+    Returns:
+        ``(log_pdf, log_sf)``, already clamped and penalised. **Do not clamp
+        the result again** — that would flatten the ``rt <= t0`` penalty back
+        to a constant and remove the gradient that pushes `t0` into the valid
+        region.
+    """
     rt_shifted = rt - t0
     rt_safe = jnp.maximum(rt_shifted, _FLOOR)
 

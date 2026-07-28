@@ -1,4 +1,18 @@
-"""Hierarchical conflict diffusion model."""
+"""Hierarchical conflict diffusion model likelihood.
+
+Combines the condition-dependent neural/analytic routing of
+``likelihoods.crdm`` with the ``(data, mask)`` multi-subject interface of
+``likelihoods.hierarchical_rdm``; see those two modules for the details of
+each.  Parameter order is
+``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``, so ``P = 7``.
+
+There is no analytic reference counterpart: the conflict accumulator has a
+time-varying drift and no closed-form first-passage density, which is the whole
+reason the flow exists.  ``likelihoods.crdm_volterra`` provides a numerical
+reference for the single-subject case.
+
+The censoring-sentinel gap documented in ``likelihoods.crdm`` applies here too.
+"""
 
 import jax
 import jax.numpy as jnp

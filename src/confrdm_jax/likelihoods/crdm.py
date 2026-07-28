@@ -1,4 +1,39 @@
-"""Conflict racing diffusion model."""
+"""Conflict racing diffusion model — hybrid neural / analytic likelihood.
+
+Only one of the two accumulators carries the conflict pulse, and only that one
+needs the flow.  The other has constant drift, so its first-passage density is
+inverse Gaussian and is computed exactly.  Which accumulator is which flips
+with the condition:
+
+=========================  ==========================  ======================
+Condition                  Neural flow gets            Inverse Gaussian gets
+=========================  ==========================  ======================
+congruent (``cond == 1``)  target ``(v_c_true, s_true)``  ``(v_c_false, 1.0)``
+incongruent (``cond == 0``)  non-target ``(v_c_false, 1.0)``  ``(v_c_true, s_true)``
+=========================  ==========================  ======================
+
+This mirrors the simulator, where the sign of ``amp`` routes the pulse to one
+accumulator or the other while its shape always uses ``|amp|``.  The flow
+accordingly conditions on ``|amp|`` and the routing is expressed entirely
+through which accumulator's ``(v_c, s)`` it is given.
+
+Both branches are evaluated for every trial and selected with ``jnp.where``,
+which keeps the computation traceable at the cost of doing roughly twice the
+work.  Parameter order is
+``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``, in log space on entry.
+
+Known gap:
+    The simulators emit ``rt = -1.0`` for trials that never crossed within
+    ``t_max``, which is the observation ``T > t_max``. ``flows.loss_fn`` scores
+    that correctly by ``log S(t_max)``, but the likelihoods here route it into
+    the ``rt <= t0`` branch of ``_penalize_invalid_rt`` instead, contributing a
+    large negative penalty with a gradient that drives ``t0`` down. It is
+    unreachable under the configured recovery prior — the target accumulator's
+    drift of ~5 always crosses long before ``t_max = 4.0`` (measured: 0 of
+    10 000 trials censored, longest RT 0.99 s) — but it would become reachable
+    if ``t_max`` were shortened or the recovery prior widened toward low drift
+    or high boundary.
+"""
 
 import jax.numpy as jnp
 

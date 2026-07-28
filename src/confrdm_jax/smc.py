@@ -1,3 +1,15 @@
+"""Driver for the tempered SMC used by the hierarchical recovery path.
+
+Hierarchical posteriors are sampled with ``blackjax.adaptive_tempered_smc``
+rather than NUTS: the particle cloud starts from the prior and is annealed
+towards the posterior, which copes with the strong funnel geometry of the
+semi-centered hierarchical parameterisation better than a single chain does.
+
+The number of tempering steps is data-dependent, so the loop is a
+``jax.lax.while_loop`` rather than a ``scan`` — it runs until the inverse
+temperature reaches 1.
+"""
+
 import jax
 
 def smc_inference_loop(rng_key, smc_kernel, initial_state, max_steps=200):

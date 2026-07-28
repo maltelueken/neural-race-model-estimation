@@ -1,3 +1,24 @@
+"""Single-subject parameter recovery for a trained conditioner.
+
+Simulates independent data sets from the recovery prior, fits each one with
+NUTS, and writes the posteriors to netCDF for the notebooks to analyse.  Each
+data set is fit independently — they are stored under a ``subject`` coordinate
+for ArviZ's benefit, but nothing is shared between them.  For the genuinely
+multi-subject model see ``parameter_recovery_hierarchical.py``.
+
+When the model has an analytic likelihood (RDM, ``run_reference_recovery:
+true``) the same data are fit a second time with it, giving a reference
+posterior that ``scripts/c2st_recovery.py`` can compare the neural one
+against. The CRDM has no closed form, so only the approximate fit runs.
+
+Must be launched with the same overrides that produced the checkpoint —
+nothing on disk records the conditioner's architecture::
+
+    python scripts/parameter_recovery.py model=rdm
+
+Outputs ``parameter_recovery_approx.nc`` and, when enabled,
+``parameter_recovery_ref.nc`` in the Hydra run directory.
+"""
 
 import logging
 from pathlib import Path
@@ -32,12 +53,26 @@ def _overdispersed_init(rng_key, prior, num_chains, min_rt):
     cannot be treated the same way: the likelihood is undefined for
     `t0 >= min(rt)` and the penalty branch there has a gradient of order 1e3,
     so a chain started above the boundary diverges on every step and never
-    recovers. Measured: perturbing all five parameters alike gives 1001/1000
-    divergences and ESS 7 (CONFRDM_JAX.md §8.4).
+    recovers. Measured on the RDM at n = 500: perturbing all five parameters
+    alike by ~0.35 in log space gives 1001/1000 divergences, max R-hat 1.53
+    and min ESS 7. Dispersion has to be support-aware.
 
-    `t0` is therefore spread deterministically across the interval it is
-    actually confined to. It is the last parameter by the ordering contract in
-    CONFRDM_JAX.md §2.
+    `t0` is therefore spread deterministically over fractions of `min_rt` — the
+    interval it is actually confined to — rather than being given Gaussian
+    noise. It is assumed to be the **last** parameter, which holds for both
+    recovery priors: RDM is ``[v_intercept, v_slope, s_true, b, t0]`` and CRDM
+    ``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``. That ordering is
+    positional and unenforced.
+
+    Args:
+        rng_key: PRNG key for the prior draws.
+        prior: The recovery prior; its draws are the dispersion source.
+        num_chains: Number of starting positions to produce.
+        min_rt: Smallest *valid* observed RT. Callers must exclude the
+            ``-1.0`` censoring sentinel before computing it.
+
+    Returns:
+        Log-space starting positions, shape ``(num_chains, num_params)``.
     """
     draws = jnp.stack(prior.sample(seed=rng_key, sample_shape=(num_chains,)), axis=1)
     t0_fraction = jnp.linspace(0.2, 0.8, num_chains)
@@ -48,21 +83,28 @@ def _build_recovery_datatree(samples, data, true_params, prior_ds, param_names):
     """Build an ArviZ-compatible DataTree for all recovered datasets.
 
     Args:
-        samples: MCMC draws, shape ``(num_subjects, num_chains, num_draws, num_params)``,
-            already in original (non-log) space.
-        data: Observed data, shape ``(num_subjects, num_trials, num_cols)``.
-        true_params: True parameter values, shape ``(num_subjects, num_params)``.
+        samples: MCMC draws, shape
+            ``(num_datasets, num_draws, num_chains, num_params)`` — draws
+            before chains, because ``inference_loop_multiple_chains`` scans
+            over draws with the chain axis inside, and ``jax.vmap`` then
+            prepends the dataset axis. Already in original (non-log) space.
+        data: Observed data, shape ``(num_datasets, num_trials, num_cols)``.
+        true_params: True parameter values, shape
+            ``(num_datasets, num_params)``.
         prior_ds: Pre-built ``xr.Dataset`` of prior samples.
         param_names: List of parameter names, length ``num_params``.
 
     Returns:
         ``xr.DataTree`` with posterior, observed_data, constant_data, and
-        prior groups, ready to save as netCDF.
+        prior groups, ready to save as netCDF. Data sets are stored under a
+        ``subject`` coordinate because that is what ArviZ and the notebooks
+        expect, though they are independent fits rather than subjects of one
+        model.
     """
     num_subjects = data.shape[0]
     subjects = np.arange(num_subjects)
 
-    # samples: (subjects, draws, chains, params) → per param: (chains, draws, subjects)
+    # samples: (datasets, draws, chains, params) → per param: (chains, draws, datasets)
     posterior_ds = az.dict_to_dataset(
         {name: np.transpose(np.array(samples[..., i]), (2, 1, 0))
          for i, name in enumerate(param_names)},
@@ -122,12 +164,19 @@ def main(cfg):
     prior = instantiate(cfg["model"]["recovery_prior"])
     test_sampler = instantiate(cfg["model"]["test_sampler"])
 
+    # Read from the `hierarchical` block because that is the only place the
+    # names are written down; the single-subject recovery prior has the same
+    # parameters in the same order, so the list is shared rather than
+    # duplicated.
     param_names = cfg["model"]["hierarchical"]["param_names"]
 
+    # MCMC works on log parameters, so the prior — which is defined on the
+    # natural scale, and is the same object that generated the data — needs the
+    # log-transform Jacobian: d(exp(x))/dx = exp(x), giving + sum(x).
     @jax.jit
     def log_prior(x):
         params = jnp.exp(x)
-        return prior.log_prob([params[i] for i in range(params.shape[0])]) + jnp.sum(x) # Add the Jacobian of the log-transform
+        return prior.log_prob([params[i] for i in range(params.shape[0])]) + jnp.sum(x)
 
     # Generate test data
     test_data, test_context = test_sampler(
@@ -157,6 +206,22 @@ def main(cfg):
     likelihood_factory_approx = instantiate(cfg["model"]["likelihood_factory_approx"])(conditioner)
 
     def recover_dataset(sampling_key, data, create_likelihood_fun):
+        """Fit one data set with NUTS and return draws on the natural scale.
+
+        Vmapped over data sets by the caller, so everything inside must be
+        shape-static and free of Python branching on traced values.
+
+        Args:
+            sampling_key: PRNG key for this data set.
+            data: One data set, ``(num_trials, num_cols)``.
+            create_likelihood_fun: Takes `data`, returns a per-trial
+                log-likelihood function of log-parameters.
+
+        Returns:
+            Draws of shape ``(num_draws, num_chains, num_params)``,
+            exponentiated back to the natural scale. Nothing is discarded as
+            burn-in — warm-up already ran separately.
+        """
         # Censored trials carry the sentinel rt = -1.0.  Taking the raw minimum
         # would initialise t0 negative and `jnp.log` it to NaN, silently
         # poisoning the whole chain, so initialise from valid RTs only.
@@ -176,7 +241,10 @@ def main(cfg):
 
         # One window adaptation per chain, so the starts are dispersed *and*
         # converged and R-hat measures between-chain disagreement rather than
-        # Monte-Carlo noise.  See CONFRDM_JAX.md §8.
+        # Monte-Carlo noise.  Sharing one warmed-up state across chains leaves
+        # the between-chain variance at zero on entry; on a bimodal test target
+        # that reports R-hat = 1.001 while the sampler sits entirely in one
+        # mode.  See `warmup_multiple_chains`.
         last_states, kernel_params = warmup_multiple_chains(
             blackjax.nuts,
             logdensity_fun,

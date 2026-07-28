@@ -1,3 +1,12 @@
+"""Distributions and prior machinery shared by the simulators.
+
+Three things live here: a distrax-compatible truncated normal (distrax has no
+native one, and the TFP substrate's does not always play well with
+``distrax.Joint``), the semi-centered hierarchical LKJ-MVN prior used by both
+hierarchical models, and a design helper for choosing that prior's
+hyperparameters from interpretable percentile intervals.
+"""
+
 from typing import Tuple
 
 import numpy as np
@@ -60,6 +69,24 @@ def interval_to_mu_loc_scale(percentile_interval, subject_scale):
 
 
 class TruncatedNormal(distrax.Distribution):
+    """Normal distribution restricted to ``[lower, upper]``.
+
+    Used for every strictly-positive parameter whose prior is naturally
+    described by a mean and a spread — drifts, pulse amplitude and time scale,
+    non-decision time — with ``upper = jnp.inf``.
+
+    Sampling is by inverse-CDF on the truncated interval, which is exact and
+    branch-free (so it survives ``jit`` and ``vmap``), unlike rejection
+    sampling.
+
+    Args:
+        loc: Location of the untruncated normal, *not* the mean of the
+            truncated one.
+        scale: Scale of the untruncated normal.
+        lower: Lower truncation point.
+        upper: Upper truncation point; ``jnp.inf`` for one-sided truncation.
+    """
+
     def __init__(
         self,
         loc: jnp.ndarray,
@@ -104,6 +131,13 @@ class TruncatedNormal(distrax.Distribution):
         )
 
     def mode(self) -> jnp.ndarray:
+        """Mode of the truncated density: `loc`, clipped into the interval.
+
+        Warning:
+            The comparisons are Python-level, so this only works for scalar,
+            *concrete* parameters — it raises under ``jit``/``vmap`` or with
+            array-valued `loc`. Nothing in the sampling path calls it.
+        """
         if self._loc < self._lower:
             return self._lower
         elif self._loc > self._upper:

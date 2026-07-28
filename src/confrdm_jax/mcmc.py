@@ -1,3 +1,16 @@
+"""BlackJAX NUTS driving helpers for the single-subject recovery path.
+
+Two pieces: window adaptation (:func:`warmup`, :func:`warmup_multiple_chains`)
+and the sampling loop (:func:`inference_loop_multiple_chains`).  They are split
+so that chains can be adapted *independently* and then advanced in lockstep,
+each carrying its own step size and mass matrix.
+
+Everything here operates on unconstrained positions.  The models parameterise
+in log space, so the log-density handed in is expected to include the
+log-transform Jacobian already (see ``log_prior`` in
+``scripts/parameter_recovery.py``).
+"""
+
 import blackjax
 import jax
 from blackjax.adaptation.base import get_filter_adapt_info_fn
@@ -37,6 +50,22 @@ def inference_loop_multiple_chains(
 
 
 def warmup(sampler_fun, logdensity_fun, init_position, num_steps, rng_key, **kwargs):
+    """Run window adaptation for a single chain.
+
+    Args:
+        sampler_fun: BlackJAX sampler constructor, e.g. ``blackjax.nuts``.
+        logdensity_fun: Unnormalised log posterior on unconstrained positions.
+        init_position: Starting position pytree (no chain axis).
+        num_steps: Adaptation steps.
+        rng_key: PRNG key.
+        **kwargs: Forwarded to ``blackjax.window_adaptation``.
+
+    Returns:
+        ``(kernel, last_state, parameters)`` with the tuning constants already
+        bound into `kernel`, so it is called as ``kernel(key, state)``.  Use
+        :func:`warmup_multiple_chains` instead when running several chains —
+        replicating one warmed-up state across chains makes R-hat vacuous.
+    """
     adapt = blackjax.window_adaptation(sampler_fun, logdensity_fun, **kwargs)
     (last_state, parameters), _ = adapt.run(rng_key, init_position, num_steps=num_steps)
     kernel = sampler_fun(logdensity_fun, **parameters).step
@@ -51,9 +80,16 @@ def warmup_multiple_chains(
     Replicating a single warmed-up state across chains — which is what
     ``jax.vmap(lambda _: last_state)(...)`` does — leaves R-hat with nothing to
     measure but Monte-Carlo noise, because the between-chain variance starts at
-    zero and the chains begin inside whichever mode the one warm-up found. See
-    ``CONFRDM_JAX.md`` §8 for a target where that yields R-hat = 1.001 while
-    half the posterior is missed.
+    zero and the chains begin inside whichever mode the one warm-up found.
+
+    That failure is not hypothetical.  On a controlled bimodal target with
+    modes at +-6 (4 chains x 2000 draws), the shared-state init reports max
+    R-hat = 1.001 while putting 100% of its mass in a single mode; an
+    overdispersed init reports R-hat = 1.734 and splits 50/50, which is the
+    truth.  The draws from the shared init are not *biased* — every chain gets
+    a fresh key per step, and they start from a state adaptation has already
+    brought to stationarity — but the diagnostic reported alongside them cannot
+    fail, so it carries no information.
 
     Adapting per chain gives starts that are both overdispersed *and*
     converged, so R-hat measures what Gelman-Rubin assumes it measures. The

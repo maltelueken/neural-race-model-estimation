@@ -4,6 +4,25 @@ Solves the Volterra integral equation of the second kind numerically to compute
 the FPT density of a diffusion process with time-varying drift (gamma-pulse conflict
 signal) through a constant upper boundary.
 
+This is the **reference** the neural flow is validated against: it computes the
+same quantity the flow approximates, by deterministic numerical integration
+rather than by learning from simulated trials.  Verified against the analytical
+inverse Gaussian in the ``amp -> 0`` limit, where the time-varying drift
+degenerates to a constant one: at ``dt = 0.001`` the density agrees to ~2e-11
+and the CDF to ~1e-5 across the parameter range used here.
+
+Two ways it is used.  ``scripts/compare_neural_densities.py`` calls
+:func:`solve_volterra_fpt` directly to measure flow-vs-reference accuracy on a
+parameter grid.  :func:`create_crdm_likelihood_volterra` wraps it into a full
+race likelihood with the same neural/analytic routing as
+``likelihoods.crdm``; that is a reference posterior path and is **not currently
+reachable from Hydra** — ``conf_jax/model/crdm.yaml`` declares no
+``likelihood_factory_ref`` and sets ``run_reference_recovery: false``, so
+selecting it means adding both.
+
+Being an O(N^2) sequential solve over the time grid, it is far slower than the
+flow; that cost is the point of having the flow at all.
+
 Adapted from: integral.py (Richter, Ulrich & Janczyk, 2015).
 
 """
@@ -18,10 +37,22 @@ from confrdm_jax.simulators.crdm_utils import normalized_gamma, normalized_gamma
 from .rdm import inv_gauss_log_pdf_sf, _penalize_invalid_rt
 
 def integrated_drift(t, v_c, amp, tau, a_shape=2.0):
+    """M(t): the accumulator's mean position at time `t`, starting from 0.
+
+    The integral of :func:`instantaneous_drift`. The constant term integrates
+    to ``v_c * t``; the pulse integrates back to :func:`normalized_gamma`
+    itself, with no constant of integration because ``normalized_gamma(0) = 0``
+    for ``a_shape = 2``.
+    """
     return v_c * t + normalized_gamma(t, amp, tau, a_shape)
 
 
 def instantaneous_drift(t, v_c, amp, tau, a_shape=2.0):
+    """v(t): the accumulator's drift rate at time `t`.
+
+    Constant baseline plus the conflict pulse — the same drift the
+    Euler-Maruyama simulator applies, so the two describe one model.
+    """
     return v_c + normalized_gamma_derivative(t, amp, tau, a_shape)
 
 
