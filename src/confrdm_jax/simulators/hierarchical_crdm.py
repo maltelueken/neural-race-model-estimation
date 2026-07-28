@@ -1,21 +1,32 @@
 import jax
 import jax.numpy as jnp
-from tensorflow_probability.substrates.jax import distributions as tfd
 
-from .base import HierarchicalRDMPriorLKJMVN, interval_to_mu_loc_scale
+from .base import HierarchicalRDMPriorLKJMVN
 from .crdm import simulate_crdm_dataset
+
+
+NUM_PARAMS = 7
 
 
 def create_hierarchical_crdm_prior_lkj_mvn(
     num_subjects,
+    *,
+    inverse_gamma_scale,
+    mu_loc,
+    mu_scale,
     lkj_concentration=2.0,
-    inverse_gamma_scale=None,
-    mu_loc=None,
-    mu_scale=None,
 ):
+    """Build the 7-parameter hierarchical CRDM prior.
+
+    The three hyperparameter arrays are required and keyword-only: there is no
+    defensible default shared by the RDM (P=5) and CRDM (P=7) layouts, and the
+    live values are declared once in ``conf_jax/model/crdm.yaml`` under
+    ``hierarchical.prior``. Parameter order is
+    ``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``.
+    """
     return HierarchicalRDMPriorLKJMVN(
         num_subjects,
-        num_params=7,
+        num_params=NUM_PARAMS,
         lkj_concentration=lkj_concentration,
         inverse_gamma_scale=inverse_gamma_scale,
         mu_loc=mu_loc,
@@ -25,18 +36,31 @@ def create_hierarchical_crdm_prior_lkj_mvn(
 
 def sample_conditional_crdm_hierarchical_lkj_mvn(
     key, num_trials, num_subjects,
+    *,
+    inverse_gamma_scale,
+    mu_loc,
+    mu_scale,
     lkj_concentration=2.0,
-    inverse_gamma_scale=None,
-    mu_loc=None,
-    mu_scale=None,
     dt=0.001, t_max=4.0,
 ):
+    """Draw one population from the prior and simulate CRDM data for it.
+
+    Half the trials are congruent (``+amp``) and half incongruent (``-amp``).
+
+    Returns:
+        ``(data, context)``. `data` has shape ``(S, num_trials, 3)`` with
+        columns ``[rt, choice, condition]``, condition being 1 for congruent
+        and 0 for incongruent; `context` is the raw prior sample — a dict with
+        keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt``.
+    """
     key_context, key_data_con, key_data_inc = jax.random.split(key, 3)
 
     prior = create_hierarchical_crdm_prior_lkj_mvn(
-        num_subjects, lkj_concentration=lkj_concentration,
-        inverse_gamma_scale=inverse_gamma_scale, mu_loc=mu_loc,
+        num_subjects,
+        inverse_gamma_scale=inverse_gamma_scale,
+        mu_loc=mu_loc,
         mu_scale=mu_scale,
+        lkj_concentration=lkj_concentration,
     )
 
     params = prior.sample(seed=key_context)

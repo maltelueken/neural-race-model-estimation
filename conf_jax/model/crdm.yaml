@@ -13,10 +13,6 @@ test_sampler:
   dt: 0.001
   t_max: 4.0
 
-log_prior:
-  _target_: confrdm_jax.priors.crdm_prior
-  _partial_: true
-
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_crdm_likelihood_factory_approx
   _partial_: true

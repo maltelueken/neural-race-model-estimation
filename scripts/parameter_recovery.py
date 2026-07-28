@@ -136,8 +136,14 @@ def main(cfg):
         prior,
     )
 
-    test_data = test_data.squeeze()
-    test_context = test_context.squeeze()  # (num_datasets, num_params)
+    # Drop only the axes that are meant to be dropped — the trailing singleton
+    # the CRDM sampler appends to `data`, and the singleton prior-batch axis in
+    # `context` — and never the leading dataset axis.  A blanket `.squeeze()`
+    # ate that axis whenever `test_num_datasets == 1`, so `test_data.shape[0]`
+    # became the trial count and `recover_dataset` was handed a single trial.
+    num_datasets = cfg["test_num_datasets"]
+    test_data = test_data.reshape(num_datasets, cfg["test_num_obs"], -1)
+    test_context = test_context.reshape(num_datasets, -1)  # (num_datasets, num_params)
 
     # Sample from the prior for the prior group
     prior_raw = prior.sample(seed=prior_sample_key, sample_shape=(1000,))

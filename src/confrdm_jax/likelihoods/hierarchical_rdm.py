@@ -18,12 +18,14 @@ def create_rdm_hierarchical_likelihood(data, mask):
     Args:
         data: Padded trial data, shape (S, max_trials, 2) with columns [RT, choice].
         mask: Boolean mask, shape (S, max_trials). True for real trials.
-        num_params: Number of per-subject RDM parameters (default 5).
-        num_pop_params: Number of population-level parameters in the flat vector (default 8).
 
     Returns:
-        A JIT-compiled function `likelihood_fun(x)` that takes a flat parameter vector
-        and returns a scalar total log-likelihood across all subjects and trials.
+        A JIT-compiled function `likelihood_fun(log_theta)` taking subject-level
+        log-parameters of shape (S, 5) — columns
+        ``[v_intercept, v_slope, s_true, b, t0]`` — and returning a scalar total
+        log-likelihood across all subjects and trials. Population-level
+        parameters do not enter here; the caller reconstructs `log_theta` from
+        them first (see `scripts/parameter_recovery_hierarchical.py`).
     """
 
     def _single_subject_ll(subject_data, subject_mask, subject_params):
@@ -64,11 +66,12 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner):
 
     Args:
         conditioner: Trained neural network conditioner for density estimation.
-        num_params: Number of per-subject RDM parameters (default 5).
-        num_pop_params: Number of population-level parameters in the flat vector (default 8).
 
     Returns:
-        A function `create_likelihood(data, mask)` that returns a likelihood function.
+        A function `create_likelihood(data, mask)` returning a likelihood
+        function with the same signature as
+        `create_rdm_hierarchical_likelihood`'s: it takes subject-level
+        log-parameters of shape (S, 5), not a flat vector.
     """
     def inv_gauss_log_pdf_sf_approx(rt, v, s, b, t0):
         rt_shifted = rt - t0

@@ -6,30 +6,36 @@ import jax
 import jax.numpy as jnp
 from distrax._src.utils import conversion
 from tensorflow_probability.substrates.jax import distributions as tfd
-from tensorflow_probability.substrates.jax import bijectors as tfb
 
 _Z_95 = 1.96  # z-score for 97.5th percentile (95% CI spans P2.5 to P97.5)
 
 
-def interval_to_mu_loc_scale(percentile_interval, halfnormal_scale):
+def interval_to_mu_loc_scale(percentile_interval, subject_scale):
     """Convert 95% CI intervals on the original scale to Normal hyperparameters in log-space.
+
+    A design helper for choosing ``mu_loc`` / ``mu_scale``: it records where the
+    hyperparameters in ``conf_jax/model/*.yaml`` come from. Nothing in the
+    runtime path calls it — the configs carry the resulting numbers directly.
 
     For a LogNormal(mu, sigma_total) marginal prior, the 95% CI is:
         [exp(mu - 1.96 * sigma_total),  exp(mu + 1.96 * sigma_total)]
     Solving for mu and sigma_total given [lo, hi]:
         mu_loc      = (ln(lo) + ln(hi)) / 2
         sigma_total = ln(hi / lo) / (2 * 1.96)
-    The total variance splits across two independent sources:
-        sigma_total^2 = mu_scale^2 + halfnormal_scale^2
+    The total variance splits across two independent sources — uncertainty
+    about the population mean, and spread between subjects:
+        sigma_total^2 = mu_scale^2 + subject_scale^2
     so:
-        mu_scale = sqrt(sigma_total^2 - halfnormal_scale^2)
+        mu_scale = sqrt(sigma_total^2 - subject_scale^2)
 
     Args:
         percentile_interval: array-like, shape (P, 2). Each row is [lo, hi] —
             the 2.5th and 97.5th percentile of the marginal prior on that
             parameter (on the original, non-log scale).
-        halfnormal_scale: array-like, shape (P,). Scale of the HalfNormal prior
-            on between-subject std devs. Must be smaller than sigma_total for
+        subject_scale: array-like, shape (P,). A representative between-subject
+            std dev in log space — for `HierarchicalRDMPriorLKJMVN` a central
+            value of the InverseGamma prior on ``s`` (e.g. its mode,
+            ``inverse_gamma_scale / 5``). Must be smaller than sigma_total for
             every parameter.
 
     Returns:
@@ -37,17 +43,17 @@ def interval_to_mu_loc_scale(percentile_interval, halfnormal_scale):
         mu_scale: ndarray, shape (P,).
     """
     interval = np.asarray(percentile_interval, dtype=float)
-    hn_scale = np.asarray(halfnormal_scale, dtype=float)
+    subj_scale = np.asarray(subject_scale, dtype=float)
     lo, hi = interval[:, 0], interval[:, 1]
 
     mu_loc = (np.log(lo) + np.log(hi)) / 2.0
     sigma_total = np.log(hi / lo) / (2.0 * _Z_95)
-    sigma_sq_remaining = sigma_total**2 - hn_scale**2
+    sigma_sq_remaining = sigma_total**2 - subj_scale**2
     if np.any(sigma_sq_remaining <= 0):
         bad = np.where(sigma_sq_remaining <= 0)[0]
         raise ValueError(
-            f"halfnormal_scale is too large relative to the requested interval "
-            f"for parameter indices {bad.tolist()}. Reduce halfnormal_scale or widen the interval."
+            f"subject_scale is too large relative to the requested interval "
+            f"for parameter indices {bad.tolist()}. Reduce subject_scale or widen the interval."
         )
     mu_scale = np.sqrt(sigma_sq_remaining)
     return mu_loc, mu_scale
@@ -106,36 +112,54 @@ class TruncatedNormal(distrax.Distribution):
     
 
 class HierarchicalRDMPriorLKJMVN:
-    """Hierarchical LKJ-MVN prior parameterized by (L, mu, log_theta).
+    """Semi-centered hierarchical LKJ-MVN prior over subject-level log-parameters.
 
-    Internally uses CholeskyLKJ, HalfNormal, Normal, and MVN components.
-    The ``log_prob`` method accepts the Cholesky factor of the covariance
-    matrix L (not the separate rho_chol and s), and includes the Jacobian
-    for the L -> (rho_chol, s) decomposition where L = diag(s) @ rho_chol.
+    The joint is over five named components — ``s`` (between-subject scales),
+    ``mu`` (population means), ``psi_raw`` (the CholeskyLKJ correlation factor),
+    ``z`` (standard-normal offsets for the non-centered block) and ``theta_bt``
+    (the centered block) — and both ``sample`` and ``log_prob`` speak in that
+    dict, not in ``(s, L, mu, log_theta)``.
+
+    The covariance Cholesky is ``L = diag(s) @ psi_raw``. Subject-level
+    log-parameters are reconstructed by the caller as::
+
+        L_ncp     = L[:P_ncp, :P_ncp]
+        theta_ncp = mu[:P_ncp] + einsum('nj,ij->ni', z, L_ncp)
+        log_theta = concat([theta_ncp, theta_bt], axis=-1)
+
+    The leading ``num_params - num_centered`` parameters use the non-centered
+    parameterization (``z``); the trailing ``num_centered`` use the centered one
+    (``theta_bt``), drawn from the MVN conditional on ``z``.
 
     Parameters
     ----------
     num_subjects : int
         Number of subjects.
+    num_params : int
+        Number of per-subject parameters P (5 for RDM, 7 for CRDM).
+    num_centered : int
+        How many trailing parameters use the centered parameterization.
     lkj_concentration : float
         Concentration parameter for CholeskyLKJ.
-    halfnormal_scale : array-like, shape (P,)
-        Scale for HalfNormal prior on standard deviations.
+    inverse_gamma_scale : array-like, shape (P,)
+        Scale of the InverseGamma(4, scale) prior on the between-subject
+        standard deviations ``s``. Required.
     mu_loc : array-like, shape (P,)
-        Mean of Normal prior on population mean.
+        Mean of the Normal prior on the population mean. Required.
     mu_scale : array-like, shape (P,)
-        Std dev of Normal prior on population mean.
+        Std dev of the Normal prior on the population mean. Required.
     """
 
     def __init__(
         self,
         num_subjects,
         num_params,
+        *,
+        inverse_gamma_scale,
+        mu_loc,
+        mu_scale,
         num_centered=2,
         lkj_concentration=2.0,
-        inverse_gamma_scale=None,
-        mu_loc=None,
-        mu_scale=None,
     ):
         self.num_subjects = num_subjects
         self.num_params = num_params
@@ -150,8 +174,21 @@ class HierarchicalRDMPriorLKJMVN:
         mu_loc = jnp.asarray(mu_loc)
         mu_scale = jnp.asarray(mu_scale)
 
-        if mu_loc.shape[0] != num_params or mu_scale.shape[0] != num_params or inverse_gamma_scale.shape[0] != num_params:
-            raise ValueError("Length of location and scale parameters must be equal to 'num_params'")
+        wrong = {
+            name: arr.shape
+            for name, arr in (
+                ("inverse_gamma_scale", inverse_gamma_scale),
+                ("mu_loc", mu_loc),
+                ("mu_scale", mu_scale),
+            )
+            if arr.shape != (num_params,)
+        }
+        if wrong:
+            raise ValueError(
+                f"Hyperparameter arrays must have shape (num_params,) = ({num_params},); "
+                f"got {wrong}. RDM uses num_params=5, CRDM num_params=7 — check that "
+                f"the hyperparameters come from the matching model config."
+            )
 
         self._inverse_gamma_shape = 4.0
         self._inverse_gamma_scale = inverse_gamma_scale
@@ -174,7 +211,7 @@ class HierarchicalRDMPriorLKJMVN:
             )
 
         self._joint = tfd.JointDistributionNamed({
-            # Each parameter in P gets its own HalfNormal scale
+            # Each parameter in P gets its own InverseGamma between-subject scale
             "s": tfd.Independent(
                 tfd.InverseGamma(concentration=self._inverse_gamma_shape, scale=inverse_gamma_scale),
                 reinterpreted_batch_ndims=1
@@ -203,7 +240,13 @@ class HierarchicalRDMPriorLKJMVN:
         })
 
     def sample(self, seed):
-        """Sample from the prior, returning (s, L, mu, log_theta)."""
+        """Draw one sample from the prior.
+
+        Returns
+        -------
+        dict with keys ``s`` (P,), ``mu`` (P,), ``psi_raw`` (P, P),
+        ``z`` (S, P_ncp) and ``theta_bt`` (S, num_centered).
+        """
         return self._joint.sample(seed=seed)
 
     def mode(self):
@@ -212,7 +255,7 @@ class HierarchicalRDMPriorLKJMVN:
         Useful for initializing MCMC samplers.  The modal values are computed
         analytically for each marginal / conditional:
 
-        - ``s``        : InverseGamma(α=2, β=scale) → mode = scale / 3
+        - ``s``        : InverseGamma(α=4, β=scale) → mode = scale / 5
         - ``mu``       : Normal(mu_loc, mu_scale)   → mode = mu_loc
         - ``psi_raw``  : CholeskyLKJ(concentration≥1) → mode = identity
         - ``z``        : Normal(0, 1)               → mode = 0
@@ -223,7 +266,7 @@ class HierarchicalRDMPriorLKJMVN:
         -------
         dict with keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt``.
         """
-        # InverseGamma(alpha=2, beta): mode = beta / (alpha + 1) = beta / 3
+        # InverseGamma(alpha, beta): mode = beta / (alpha + 1); here alpha = 4
         s_mode = self._inverse_gamma_scale / (self._inverse_gamma_shape + 1.0)
 
         # Normal: mode = loc
@@ -251,21 +294,19 @@ class HierarchicalRDMPriorLKJMVN:
         }
 
     def log_prob(self, params):
-        """Evaluate log-prior density in the (L, mu, log_theta) parameterization.
+        """Evaluate the joint log-prior density on the constrained parameters.
 
-        Derives s = sqrt(diag(L @ L.T)) from L and evaluates the joint
-        distribution at (s, L, mu, log_theta).  The TransformedDistribution
-        component (ScaleMatvecDiag bijector) handles the L <-> rho_chol
-        Jacobian automatically.
+        This is the density of the sampling parameterization — the five named
+        components as drawn — not of ``(L, mu, log_theta)``. No change of
+        variables is applied here, so callers working in an unconstrained space
+        must add their own log-Jacobian (see ``log_prior_fn`` in
+        ``scripts/parameter_recovery_hierarchical.py``).
 
         Parameters
         ----------
-        L : array, shape (P, P)
-            Lower-triangular Cholesky factor of the covariance matrix Sigma.
-        mu : array, shape (P,)
-            Population-level mean.
-        log_theta : array, shape (S, P)
-            Subject-level parameters in log space.
+        params : dict
+            Keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt``, shaped as
+            returned by :meth:`sample`.
 
         Returns
         -------

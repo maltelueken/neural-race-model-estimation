@@ -17,11 +17,15 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
 
     Args:
         conditioner: Trained neural network conditioner for density estimation.
-        num_params: Number of per-subject CRDM parameters (default 7).
-        num_pop_params: Number of population-level parameters in the flat vector.
 
     Returns:
-        A function `create_likelihood(data, mask)` that returns a likelihood function.
+        A function `create_likelihood(data, mask)` returning
+        `likelihood_fun(log_theta)`, which takes subject-level log-parameters of
+        shape (S, 7) — columns ``[v_c_intercept, v_c_slope, amp, tau, s_true,
+        b, t0]`` — and returns a scalar total log-likelihood. It expects `data`
+        of shape (S, max_trials, 3) with columns ``[rt, choice, condition]``.
+        Population-level parameters do not enter here; the caller reconstructs
+        `log_theta` from them first.
     """
     def crdm_log_pdf_sf(rt, v_c, amp, tau, s, b, t0):
         rt_shifted = rt - t0

@@ -9,10 +9,6 @@ test_sampler:
   _target_: confrdm_jax.simulators.sample_conditional_rdm
   _partial_: true
 
-log_prior:
-  _target_: confrdm_jax.priors.rdm_prior
-  _partial_: true
-
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_rdm_likelihood_factory_approx
   _partial_: true

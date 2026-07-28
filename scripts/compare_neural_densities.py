@@ -276,7 +276,7 @@ def main(cfg: DictConfig) -> None:
         logger.info("No CRDM conditioners specified.")
 
     xr.DataTree.from_dict(tree_dict).to_netcdf("outputs/compare_densities/density_comparison.nc")
-    logger.info(f"\nResults saved")
+    logger.info("\nResults saved")
 
 
 if __name__ == "__main__":

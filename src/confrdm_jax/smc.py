@@ -1,5 +1,4 @@
 import jax
-import jax.numpy as jnp
 
 def smc_inference_loop(rng_key, smc_kernel, initial_state, max_steps=200):
     """Run the tempered SMC algorithm until lmbda reaches 1.

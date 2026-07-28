@@ -1,4 +1,6 @@
+from .base import HierarchicalRDMPriorLKJMVN
 from .base import TruncatedNormal
+from .base import interval_to_mu_loc_scale
 from .crdm_utils import normalized_gamma_derivative
 from .crdm_utils import simulate_crdm_single_trial
 from .crdm import create_crdm_prior_informed
@@ -24,7 +26,9 @@ from .wald import sample_conditional_wald
 
 __all__ = [
     # Base
+    "HierarchicalRDMPriorLKJMVN",
     "TruncatedNormal",
+    "interval_to_mu_loc_scale",
     # CRDM utils
     "normalized_gamma_derivative",
     "simulate_crdm_single_trial",

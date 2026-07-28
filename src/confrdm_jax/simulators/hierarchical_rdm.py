@@ -1,22 +1,32 @@
 import jax
 import jax.numpy as jnp
-from tensorflow_probability.substrates.jax import distributions as tfd
-from tensorflow_probability.substrates.jax import bijectors as tfb
 
-from .base import HierarchicalRDMPriorLKJMVN, interval_to_mu_loc_scale
+from .base import HierarchicalRDMPriorLKJMVN
 from .rdm import simulate_rdm
+
+
+NUM_PARAMS = 5
 
 
 def create_hierarchical_rdm_prior_lkj_mvn(
     num_subjects,
+    *,
+    inverse_gamma_scale,
+    mu_loc,
+    mu_scale,
     lkj_concentration=2.0,
-    inverse_gamma_scale=None,
-    mu_loc=None,
-    mu_scale=None,
 ):
+    """Build the 5-parameter hierarchical RDM prior.
+
+    The three hyperparameter arrays are required and keyword-only: there is no
+    defensible default shared by the RDM (P=5) and CRDM (P=7) layouts, and the
+    live values are declared once in ``conf_jax/model/rdm.yaml`` under
+    ``hierarchical.prior``. Parameter order is
+    ``[v_intercept, v_slope, s_true, b, t0]``.
+    """
     return HierarchicalRDMPriorLKJMVN(
         num_subjects,
-        num_params=5,
+        num_params=NUM_PARAMS,
         lkj_concentration=lkj_concentration,
         inverse_gamma_scale=inverse_gamma_scale,
         mu_loc=mu_loc,
@@ -27,16 +37,28 @@ def create_hierarchical_rdm_prior_lkj_mvn(
 def sample_conditional_rdm_hierarchical_lkj_mvn(
     key, num_trials,
     num_subjects,
+    *,
+    inverse_gamma_scale,
+    mu_loc,
+    mu_scale,
     lkj_concentration=2.0,
-    inverse_gamma_scale=None,
-    mu_loc=None,
-    mu_scale=None,
 ):
+    """Draw one population from the prior and simulate RDM data for it.
+
+    Returns:
+        ``(data, context)``. `data` has shape ``(S, num_trials, 2)`` with
+        columns ``[rt, choice]``; `context` is the raw prior sample — a dict
+        with keys ``s``, ``mu``, ``psi_raw``, ``z``, ``theta_bt`` — from which
+        subject log-parameters are reconstructed as in the body below.
+    """
     key_context, key_data = jax.random.split(key)
 
     prior = create_hierarchical_rdm_prior_lkj_mvn(
-        num_subjects, lkj_concentration=lkj_concentration,
-        inverse_gamma_scale=inverse_gamma_scale, mu_loc=mu_loc, mu_scale=mu_scale,
+        num_subjects,
+        inverse_gamma_scale=inverse_gamma_scale,
+        mu_loc=mu_loc,
+        mu_scale=mu_scale,
+        lkj_concentration=lkj_concentration,
     )
 
     params = prior.sample(seed=key_context)

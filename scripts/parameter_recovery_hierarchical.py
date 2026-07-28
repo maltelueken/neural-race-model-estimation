@@ -204,7 +204,6 @@ def main(cfg):
 
     # Derived constants
     num_params_ncp = num_params - 2  # Non-centered for all except b and t0
-    num_L_params = num_params + num_params * (num_params - 1) // 2
 
     param_names = model_hier_cfg["param_names"]
 
