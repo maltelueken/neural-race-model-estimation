@@ -73,7 +73,8 @@ def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
 
 
 def _build_population_datatree(
-    final_state,
+    particles,
+    weights,
     n_iter,
     data,
     context,
@@ -92,14 +93,18 @@ def _build_population_datatree(
     required for ArviZ diagnostics:
 
     - ``posterior``    — population (mu, sigma) and subject-level parameters
-    - ``sample_stats`` — SMC log-weights per particle per chain
+    - ``sample_stats`` — final-increment SMC weights per particle per chain
     - ``observed_data``— RT, choice (and condition for CRDM) per subject/trial
     - ``constant_data``— true parameters for recovery assessment
 
     Args:
-        final_state: SMC final state; ``.particles`` has shape
-            ``(num_chains, num_particles, num_flat_params)`` and ``.weights``
-            has shape ``(num_chains, num_particles)``.
+        particles: Resampled SMC particles, equally weighted, shape
+            ``(num_chains, num_particles, num_flat_params)``.
+        weights: Final-increment weights, shape ``(num_chains, num_particles)``.
+            **Diagnostic only** — they do not index `particles`, which have
+            already been resampled against them. These are normalised *linear*
+            weights, not logs. Their ESS says how far from uniform the last
+            tempering step left the cloud; see CONFRDM_JAX.md §10.
         n_iter: Per-chain SMC iteration counts, shape ``(num_chains,)``.
         data: Observed data, shape ``(S, T, num_data_cols)``.
         context: Dict of true prior parameters from the sampler.
@@ -122,9 +127,7 @@ def _build_population_datatree(
     #   pop_mu:        (chains, draws, P)
     #   pop_s:         (chains, draws, P)
     #   pop_log_theta: (chains, draws, S, P)
-    pop_mu, pop_s, pop_log_theta = jax.vmap(jax.vmap(reconstruct))(
-        final_state.particles,
-    )
+    pop_mu, pop_s, pop_log_theta = jax.vmap(jax.vmap(reconstruct))(particles)
 
     subjects = np.arange(num_subjects)
 
@@ -145,8 +148,9 @@ def _build_population_datatree(
         },
     )
 
+    # Named `weights`, not `log_weights`: they are normalised linear weights.
     sample_stats_ds = az.dict_to_dataset(
-        {"log_weights": np.array(final_state.weights)},
+        {"weights": np.array(weights)},
         sample_dims=["chain", "draw"],
     )
 
@@ -246,7 +250,14 @@ def main(cfg):
     })
 
     def recover_population(sampling_key, data, mask, create_likelihood_fun, unravel_fn):
-        """Run tempered SMC to recover hierarchical parameters for one population."""
+        """Run tempered SMC to recover hierarchical parameters for one population.
+
+        Returns:
+            ``(particles, weights, n_iter, initial_particles)``. `particles` are
+            resampled against the final weights and so are equally weighted;
+            `weights` are retained as a diagnostic only (see CONFRDM_JAX.md §10).
+            All four carry a leading `num_chains` axis.
+        """
 
         # log_prior_fn defined here so it can close over the per-population unravel_fn.
         # Jacobian components are computed separately to avoid a broadcasting bug in
@@ -326,6 +337,7 @@ def main(cfg):
 
         def run_chain(key, step_size, inverse_mass_matrix, particles):
             """One SMC run with this chain's own tuning and its own particles."""
+            run_key, resample_key = jax.random.split(key)
             tempered = blackjax.adaptive_tempered_smc(
                 log_prior_fn,
                 log_likelihood_fn_wrapped, # Requires only loglikelihood
@@ -340,9 +352,25 @@ def main(cfg):
                 smc_cfg["target_ess"],
                 num_mcmc_steps=smc_cfg["num_mcmc_steps"],
             )
-            return smc_inference_loop(key, tempered.step, tempered.init(particles))
+            n_iter, state = smc_inference_loop(run_key, tempered.step, tempered.init(particles))
 
-        n_iter, final_state = jax.lax.map(
+            # Each SMC step is resample -> mutate -> reweight, so the weights on
+            # the returned state belong to the final temperature increment and
+            # were never resampled away.  Storing the particles as if they were
+            # equally weighted therefore reports the *penultimate* tempered
+            # target, which is flatter than the posterior — an over-dispersion
+            # bias, not just noise (measured: weighted SD below raw SD in 80% of
+            # quantities, per-chain means off by up to 0.23 posterior SD).
+            # One systematic resample makes the stored draws genuinely uniform.
+            # See CONFRDM_JAX.md §10.
+            idx = resampling.systematic(
+                resample_key, state.weights, smc_cfg["num_particles"],
+            )
+            return n_iter, state.particles[idx], state.weights
+
+        # `weights` are kept only as a diagnostic: their ESS says how much the
+        # resample above actually did.  They no longer index `particles`.
+        n_iter, particles, weights = jax.lax.map(
             lambda xs: run_chain(*xs),
             (
                 jax.random.split(chain_key, num_chains),
@@ -352,7 +380,11 @@ def main(cfg):
             ),
         )
 
-        return final_state, n_iter, initial_particles
+        weight_ess = 1.0 / jnp.sum(weights ** 2, axis=-1) / smc_cfg["num_particles"]
+        logger.info("Final-increment weight ESS per chain: %s",
+                    np.round(np.asarray(weight_ess), 3))
+
+        return particles, weights, n_iter, initial_particles
 
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
@@ -392,7 +424,7 @@ def main(cfg):
         logger.info("Running approximate recovery...")
         sampling_key, approx_key = jax.random.split(sampling_key)
 
-        final_state, n_iter, initial_particles = recover_population(
+        particles, weights, n_iter, initial_particles = recover_population(
             approx_key, data, mask, likelihood_factory_approx, unravel_fn,
         )
         logger.info("SMC converged in %s iterations", n_iter)
@@ -417,7 +449,8 @@ def main(cfg):
         )
 
         dt = _build_population_datatree(
-            final_state=final_state,
+            particles=particles,
+            weights=weights,
             n_iter=n_iter,
             data=data,
             context=context,
@@ -440,13 +473,14 @@ def main(cfg):
             sampling_key, ref_key = jax.random.split(sampling_key)
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
-            final_state_ref, n_iter_ref, _ = recover_population(
+            particles_ref, weights_ref, n_iter_ref, _ = recover_population(
                 ref_key, data, mask, ref_likelihood, unravel_fn,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
 
             dt_ref = _build_population_datatree(
-                final_state=final_state_ref,
+                particles=particles_ref,
+                weights=weights_ref,
                 n_iter=n_iter_ref,
                 data=data,
                 context=context,
