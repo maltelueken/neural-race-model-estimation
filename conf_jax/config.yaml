@@ -38,7 +38,7 @@ conditioner_dir: .
 
 test_seed: 3500
 test_num_obs: 500
-test_num_datasets: 50
+test_num_datasets: 100
 
 learning_rate: 5e-3
 
@@ -67,8 +67,8 @@ c2st:
 
 # Hierarchical recovery settings
 hierarchical_recovery:
-  num_subjects: 50
-  test_num_populations: 1
+  num_subjects: 20
+  test_num_populations: 5
   test_num_obs_per_subject: 250
 
   smc:
