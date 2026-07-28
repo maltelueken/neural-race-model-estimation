@@ -133,7 +133,12 @@ def main(cfg):
 
     def recover_dataset(sampling_key, data, create_likelihood_fun):
         init_position = jnp.array(prior.mode(), dtype=jnp.float64)
-        init_position = init_position.at[-1].set(data[:, 0].min() / 2)
+        # Censored trials carry the sentinel rt = -1.0.  Taking the raw minimum
+        # would initialise t0 negative and `jnp.log` it to NaN, silently
+        # poisoning the whole chain, so initialise from valid RTs only.
+        rt = data[:, 0]
+        min_rt = jnp.min(jnp.where(rt > 0.0, rt, jnp.inf))
+        init_position = init_position.at[-1].set(min_rt / 2)
 
         likelihood_fun = create_likelihood_fun(data)
 

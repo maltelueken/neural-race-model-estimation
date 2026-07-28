@@ -50,29 +50,55 @@ def spline_flow(data, context, conditioner):
     return flow.log_prob(data), flow
 
 
-def loss_fn(conditioner, data, context, min_log_prob: float = 1e-12):
+def loss_fn(conditioner, data, context, t_max: float | None = None):
+  r"""Right-censored negative log-likelihood of the first-passage time.
+
+  A trial that never crosses carries the sentinel ``rt = -1.0`` (see
+  ``simulate_crdm_single_trial``).  It is *not* missing data: it is the
+  observation :math:`T > t_{\max}`, whose likelihood is the survival function.
+
+  Dropping those trials — or, equivalently, replacing their log-density with a
+  constant, which zeroes their gradient — makes the flow fit the conditional
+  density :math:`p(t \mid T < t_{\max}) = p(t)/(1-q)` instead of :math:`p(t)`,
+  with :math:`q = P(T > t_{\max})`.  The fitted survival function then decays
+  to 0 rather than to ``q``, and the density is inflated by ``-log(1-q)``
+  uniformly in ``t``.  Both errors are :math:`\theta`-dependent, so they do not
+  cancel out of the likelihood ratio and they bias the posterior.  See
+  ``CONFRDM_JAX.md`` §7 for the measured magnitudes.
+
+  Scoring the censored trials by ``log S(t_max)`` instead is the standard
+  right-censored MLE and removes the bias at no extra cost — the flow's survival
+  function is exact given the flow (``CONFRDM_JAX.md`` §3), so it is directly
+  differentiable.
+
+  ``t_max`` may be left ``None`` for samplers that cannot censor
+  (``sample_conditional_wald`` draws exactly from the inverse Gaussian).  With
+  no sentinels present the survival branch is never selected and the returned
+  value is bit-identical to the uncensored loss.
+  """
   data_flat = data.squeeze()
 
   is_valid = jnp.isfinite(data_flat) & (data_flat > 0.0)
 
-  safe_data = jnp.where(is_valid, data_flat, 1.0)
+  # Both branches are evaluated, so the substituted value must stay inside the
+  # support or the unused branch contributes NaN to the gradient.
+  safe_data = jnp.where(is_valid, data_flat, 1.0 if t_max is None else t_max)
 
-  safe_log_probs, _ = spline_flow(safe_data, context, conditioner)
+  log_pdf, flow = spline_flow(safe_data, context, conditioner)
+  log_sf = stats.norm.logsf(flow.bijector.inverse(safe_data))
 
-  final_log_probs = jnp.where(is_valid, safe_log_probs, jnp.log(min_log_prob))
-  
-  return -jnp.mean(final_log_probs)
+  return -jnp.mean(jnp.where(is_valid, log_pdf, log_sf))
 
-@nnx.jit
-def train_step(conditioner, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, data, context):
+@nnx.jit(static_argnames="t_max")
+def train_step(conditioner, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, data, context, t_max=None):
   grad_fn = nnx.value_and_grad(loss_fn)
-  loss, grads = grad_fn(conditioner, data, context)
+  loss, grads = grad_fn(conditioner, data, context, t_max)
   metrics.update(loss=loss)  # In-place updates.
   optimizer.update(conditioner, grads)  # In-place updates.
 
 
-def eval_step(conditioner, metrics: nnx.MultiMetric, data, context):
-  loss = loss_fn(conditioner, data, context)
+def eval_step(conditioner, metrics: nnx.MultiMetric, data, context, t_max=None):
+  loss = loss_fn(conditioner, data, context, t_max)
   metrics.update(loss=loss)  # In-place updates.
 
 

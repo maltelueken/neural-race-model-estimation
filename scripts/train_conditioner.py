@@ -26,6 +26,12 @@ def main(cfg):
 
     batch_shape = (cfg["train_batch_size"], cfg["train_num_obs"])
 
+    # Simulators that integrate over a finite window censor the trials that
+    # never cross; those must be scored by the survival function, not dropped.
+    # Samplers with no `t_max` (e.g. the exact-inverse-Gaussian Wald sampler)
+    # cannot censor and pass None.
+    t_max = cfg["model"]["sampler"].get("t_max", None)
+
     metrics_history = {
         "train_loss": [],
     }
@@ -54,7 +60,7 @@ def main(cfg):
 
         conditioner.train()
 
-        train_step(conditioner, optimizer, metrics, data, context)
+        train_step(conditioner, optimizer, metrics, data, context, t_max)
 
         if step > 0 and (step % eval_every == 0 or step == train_steps - 1):
             for metric, value in metrics.compute().items():
