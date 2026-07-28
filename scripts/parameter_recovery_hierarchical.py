@@ -18,7 +18,7 @@ from omegaconf import OmegaConf
 from tensorflow_probability.substrates.jax import bijectors as tfb
 from confrdm_jax.flows import load_conditioner
 from confrdm_jax.flows import make_mlp_conditioner
-from confrdm_jax.mcmc import warmup
+from confrdm_jax.mcmc import warmup_multiple_chains
 from confrdm_jax.smc import smc_inference_loop
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ def main(cfg):
         "theta_bt": tfb.Identity(),           # log(b), log(t0) -> Real
     })
 
-    def recover_population(sampling_key, data, mask, create_likelihood_fun, init_position, unravel_fn):
+    def recover_population(sampling_key, data, mask, create_likelihood_fun, unravel_fn):
         """Run tempered SMC to recover hierarchical parameters for one population."""
 
         # log_prior_fn defined here so it can close over the per-population unravel_fn.
@@ -278,60 +278,78 @@ def main(cfg):
         def logdensity_fn(params):
             return log_prior_fn(params) + log_likelihood_fn_wrapped(params)
 
-        # Run window adaptation to find good NUTS parameters.
-        # target_acceptance_rate=0.8 avoids the degenerate near-zero step sizes
-        # that 0.9 produces when the NLE posterior has high curvature.
-        sampling_key, warmup_key = jax.random.split(sampling_key)
-        _, _, adapted_params = warmup(
+        num_chains = smc_cfg["num_chains"]
+
+        sampling_key, init_key, warmup_key, cloud_key, chain_key = jax.random.split(
+            sampling_key, 5,
+        )
+
+        # Overdispersed warm-up starts: one prior draw per chain, already in the
+        # unconstrained flat space the sampler works in.  Starting every chain
+        # from `prior.mode()` made the adaptation — and therefore the mutation
+        # kernel every chain shares — a single draw with no variability at all.
+        init_positions = sample_prior_particles(
+            prior, bijector, num_chains, init_key,
+        )
+
+        # One window adaptation per chain.  target_acceptance_rate=0.8 avoids the
+        # degenerate near-zero step sizes that 0.9 produces when the NLE
+        # posterior has high curvature.  See CONFRDM_JAX.md §8.6.
+        _, adapted_params = warmup_multiple_chains(
             blackjax.nuts,
             logdensity_fn,  # Requires logdensity = logprior + loglikelihood
-            init_position,
+            init_positions,
             smc_cfg["num_warmup"],
             warmup_key,
             target_acceptance_rate=0.8,
         )
 
-        step_size = adapted_params["step_size"]
-        if step_size < 1e-4:
+        # Chains adapt independently, so the degenerate-step-size repair has to
+        # be a per-chain select rather than the scalar Python branch it was.
+        step_sizes = adapted_params["step_size"]
+        degenerate = step_sizes < 1e-4
+        if bool(jnp.any(degenerate)):
             logger.warning(
-                "Degenerate step size %.2e after warmup — overriding to 1e-3",
-                step_size,
+                "Degenerate step size in %d/%d chains after warmup — overriding to 1e-3",
+                int(jnp.sum(degenerate)), num_chains,
             )
-            adapted_params = {**adapted_params, "step_size": 1e-3}
-        logger.info("Adapted step size: %s", adapted_params["step_size"])
+        step_sizes = jnp.where(degenerate, 1e-3, step_sizes)
+        logger.info("Adapted step sizes per chain: %s", np.asarray(step_sizes))
 
-        hmc_parameters = dict(
-            step_size=adapted_params["step_size"],
-            inverse_mass_matrix=adapted_params["inverse_mass_matrix"],
-            num_integration_steps=smc_cfg["num_integration_steps"],
-        )
+        # One prior cloud per chain.  Sharing a single cloud left any gap in that
+        # one draw invisible to every between-chain comparison.
+        initial_particles = jax.vmap(
+            lambda key: sample_prior_particles(
+                prior, bijector, smc_cfg["num_particles"], key,
+            ),
+        )(jax.random.split(cloud_key, num_chains))
 
-        tempered = blackjax.adaptive_tempered_smc(
-            log_prior_fn,
-            log_likelihood_fn_wrapped, # Requires only loglikelihood
-            blackjax.hmc.build_kernel(),
-            blackjax.hmc.init,
-            extend_params(hmc_parameters),
-            resampling.systematic,
-            smc_cfg["target_ess"],
-            num_mcmc_steps=smc_cfg["num_mcmc_steps"],
-        )
-
-        # Sample initial particles from the prior
-        sampling_key, particle_key = jax.random.split(sampling_key)
-        initial_particles = sample_prior_particles(
-            prior, bijector, smc_cfg["num_particles"], particle_key,
-        )
-
-        initial_state = tempered.init(initial_particles)
-
-        # Run SMC with multiple chains
-        num_chains = smc_cfg["num_chains"]
-        sample_keys = jax.random.split(sampling_key, num_chains)
+        def run_chain(key, step_size, inverse_mass_matrix, particles):
+            """One SMC run with this chain's own tuning and its own particles."""
+            tempered = blackjax.adaptive_tempered_smc(
+                log_prior_fn,
+                log_likelihood_fn_wrapped, # Requires only loglikelihood
+                blackjax.hmc.build_kernel(),
+                blackjax.hmc.init,
+                extend_params(dict(
+                    step_size=step_size,
+                    inverse_mass_matrix=inverse_mass_matrix,
+                    num_integration_steps=smc_cfg["num_integration_steps"],
+                )),
+                resampling.systematic,
+                smc_cfg["target_ess"],
+                num_mcmc_steps=smc_cfg["num_mcmc_steps"],
+            )
+            return smc_inference_loop(key, tempered.step, tempered.init(particles))
 
         n_iter, final_state = jax.lax.map(
-            lambda key: smc_inference_loop(key, tempered.step, initial_state),
-            sample_keys,
+            lambda xs: run_chain(*xs),
+            (
+                jax.random.split(chain_key, num_chains),
+                step_sizes,
+                adapted_params["inverse_mass_matrix"],
+                initial_particles,
+            ),
         )
 
         return final_state, n_iter, initial_particles
@@ -339,9 +357,10 @@ def main(cfg):
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
 
-    # Compute unravel_fn once (shape is the same for all populations)
-    prior_mode = prior.mode()
-    init_position, unravel_fn = jfu.ravel_pytree(bijector.inverse(prior_mode))
+    # Compute unravel_fn once (shape is the same for all populations).  The
+    # flattened mode itself is unused — warm-up starts from per-chain prior
+    # draws, not from a single point.
+    _, unravel_fn = jfu.ravel_pytree(bijector.inverse(prior.mode()))
 
     reconstruct = lambda p: _reconstruct_particle(p, unravel_fn, bijector, num_params_ncp)
 
@@ -374,11 +393,14 @@ def main(cfg):
         sampling_key, approx_key = jax.random.split(sampling_key)
 
         final_state, n_iter, initial_particles = recover_population(
-            approx_key, data, mask, likelihood_factory_approx, init_position, unravel_fn,
+            approx_key, data, mask, likelihood_factory_approx, unravel_fn,
         )
         logger.info("SMC converged in %s iterations", n_iter)
 
-        prior_mu, prior_s, prior_log_theta = jax.vmap(reconstruct)(initial_particles)
+        # Each chain now has its own cloud, shape (chains, particles, params).
+        # The prior group pools them: they are all draws from the same prior.
+        pooled_particles = initial_particles.reshape(-1, initial_particles.shape[-1])
+        prior_mu, prior_s, prior_log_theta = jax.vmap(reconstruct)(pooled_particles)
         subjects = np.arange(num_subjects)
         prior_ds = xr.Dataset(
             {
@@ -388,7 +410,7 @@ def main(cfg):
                    for i, name in enumerate(param_names)},
             },
             coords={
-                "draw": np.arange(initial_particles.shape[0]),
+                "draw": np.arange(pooled_particles.shape[0]),
                 "subject": subjects,
                 "param": param_names,
             },
@@ -419,7 +441,7 @@ def main(cfg):
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
             final_state_ref, n_iter_ref, _ = recover_population(
-                ref_key, data, mask, ref_likelihood, init_position, unravel_fn,
+                ref_key, data, mask, ref_likelihood, unravel_fn,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
 
