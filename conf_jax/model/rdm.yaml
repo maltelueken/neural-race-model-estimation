@@ -40,6 +40,18 @@ hierarchical:
     _partial_: true
   prior:
     lkj_concentration: 2.0
-    inverse_gamma_scale:    [0.4, 0.4, 0.4, 0.4, 0.25]
+    # concentration is the tail index of the between-subject SD s: at the
+    # previous value of 4, rare populations drew s ~ 1 in log space and so
+    # subject parameters up to v=2.4e6 / s=274 / b=25 -- far outside the
+    # [0,8]x[0,5]x[0,5] box the flow is trained on (conf_jax/prior/wald_uniform.yaml),
+    # where its log-density has gradient spikes and flat plateaus that collapse
+    # NUTS step-size adaptation and freeze the SMC particle cloud.  15 bounds
+    # the worst case to v=4.98 / s=4.08 / b=3.38; inverse_gamma_scale is scaled
+    # x4 alongside it so the *median* of s is unchanged at 0.11.
+    inverse_gamma_concentration: 15.0
+    inverse_gamma_scale:    [1.6, 1.6, 1.6, 1.6, 1.0]
     mu_loc:                 [0.1, 0.3, 0.4, 0.4, -1.2]
-    mu_scale:               [0.25, 0.25, 0.25, 0.25, 0.1]
+    # 0.15 rather than 0.25: mu_loc puts the median of s_true and b at 1.49
+    # against a box edge of 3.0, so there is only 2x headroom for the
+    # population mean to move before subjects leave the flow's support.
+    mu_scale:               [0.15, 0.15, 0.15, 0.15, 0.1]

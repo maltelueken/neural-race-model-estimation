@@ -176,8 +176,19 @@ class HierarchicalRDMPriorLKJMVN:
     lkj_concentration : float
         Concentration parameter for CholeskyLKJ.
     inverse_gamma_scale : array-like, shape (P,)
-        Scale of the InverseGamma(4, scale) prior on the between-subject
-        standard deviations ``s``. Required.
+        Scale of the InverseGamma(concentration, scale) prior on the
+        between-subject standard deviations ``s``. Required.
+    inverse_gamma_concentration : float
+        Concentration of that InverseGamma. This is the *tail index* of ``s``:
+        ``P(s > x) ~ x**-concentration``. At the historical value of 4 the tail
+        is heavy enough that a rare population draws ``s ~ 1`` in log space and
+        so subject parameters spanning orders of magnitude — far outside the
+        box the neural flow was trained on, where its log-density has gradient
+        spikes and dead-flat plateaus that collapse NUTS step-size adaptation.
+        Lowering `inverse_gamma_scale` cannot fix this: it shifts ``s`` down but
+        leaves the tail index unchanged. Raising the concentration (and scaling
+        `inverse_gamma_scale` up to hold the median of ``s`` fixed) is what
+        bounds the worst case. Defaults to 4.0 for backward compatibility.
     mu_loc : array-like, shape (P,)
         Mean of the Normal prior on the population mean. Required.
     mu_scale : array-like, shape (P,)
@@ -192,6 +203,7 @@ class HierarchicalRDMPriorLKJMVN:
         inverse_gamma_scale,
         mu_loc,
         mu_scale,
+        inverse_gamma_concentration=4.0,
         num_centered=2,
         lkj_concentration=2.0,
     ):
@@ -224,7 +236,7 @@ class HierarchicalRDMPriorLKJMVN:
                 f"the hyperparameters come from the matching model config."
             )
 
-        self._inverse_gamma_shape = 4.0
+        self._inverse_gamma_shape = inverse_gamma_concentration
         self._inverse_gamma_scale = inverse_gamma_scale
         self._lkj_concentration = lkj_concentration
         self._mu_loc = mu_loc

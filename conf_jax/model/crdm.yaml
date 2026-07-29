@@ -39,6 +39,27 @@ hierarchical:
     _partial_: true
   prior:
     lkj_concentration: 2.0
-    inverse_gamma_scale:    [0.4, 0.8, 0.8, 0.4, 0.4, 0.4, 0.25]
+    # See conf_jax/model/rdm.yaml for the rationale: concentration is the tail
+    # index of the between-subject SD s, and at 4 it is heavy enough to push
+    # subject parameters far outside the box the flow was trained on.
+    # inverse_gamma_scale is otherwise scaled x4 alongside the concentration so
+    # the median of s is unchanged.
+    #
+    # The two entries that were 0.8 rather than 0.4 -- v_c_slope (index 1) and
+    # amp (index 2) -- are the exceptions.  x4 would put both at 3.2, twice
+    # every other entry, and that width is what kept CRDM outside the flow's
+    # support after the rest of the fix:
+    #
+    #   v_c_slope 3.2 -> v_c_true reached 11.5 against the flow's limit of 8
+    #                    (v_c_true = v_c_intercept + v_c_slope, so the widths add)
+    #   amp       3.2 -> amp reached 1.30 against its limit of 1.0
+    #
+    # Held to 2.0 and 2.5, which brings every flow input fully inside the box.
+    # Unlike the x4 entries these are NOT median-preserving: they narrow the
+    # between-subject SD of v_c_slope from a median of 0.22 to 0.14 and of amp
+    # from 0.22 to 0.17 -- a substantive claim that people differ less in
+    # conflict sensitivity and pulse amplitude than the x4 rule would imply.
+    inverse_gamma_concentration: 15.0
+    inverse_gamma_scale:    [1.6, 2.0, 2.5, 1.6, 1.6, 1.6, 1.0]
     mu_loc:                 [0.1, 0.5, -1.4, -2.2, 0.0, 0.0, -1.2]
-    mu_scale:               [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.1]
+    mu_scale:               [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.1]

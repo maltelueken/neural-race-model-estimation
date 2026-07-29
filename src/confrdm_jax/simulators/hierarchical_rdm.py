@@ -40,6 +40,7 @@ def create_hierarchical_rdm_prior_lkj_mvn(
     inverse_gamma_scale,
     mu_loc,
     mu_scale,
+    inverse_gamma_concentration=4.0,
     lkj_concentration=2.0,
 ):
     """Build the 5-parameter hierarchical RDM prior.
@@ -55,6 +56,7 @@ def create_hierarchical_rdm_prior_lkj_mvn(
         num_params=NUM_PARAMS,
         lkj_concentration=lkj_concentration,
         inverse_gamma_scale=inverse_gamma_scale,
+        inverse_gamma_concentration=inverse_gamma_concentration,
         mu_loc=mu_loc,
         mu_scale=mu_scale,
     )
@@ -67,6 +69,7 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
     inverse_gamma_scale,
     mu_loc,
     mu_scale,
+    inverse_gamma_concentration=4.0,
     lkj_concentration=2.0,
 ):
     """Draw one population from the prior and simulate RDM data for it.
@@ -82,6 +85,7 @@ def sample_conditional_rdm_hierarchical_lkj_mvn(
     prior = create_hierarchical_rdm_prior_lkj_mvn(
         num_subjects,
         inverse_gamma_scale=inverse_gamma_scale,
+        inverse_gamma_concentration=inverse_gamma_concentration,
         mu_loc=mu_loc,
         mu_scale=mu_scale,
         lkj_concentration=lkj_concentration,

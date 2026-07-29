@@ -23,6 +23,7 @@ def create_hierarchical_crdm_prior_lkj_mvn(
     inverse_gamma_scale,
     mu_loc,
     mu_scale,
+    inverse_gamma_concentration=4.0,
     lkj_concentration=2.0,
 ):
     """Build the 7-parameter hierarchical CRDM prior.
@@ -38,6 +39,7 @@ def create_hierarchical_crdm_prior_lkj_mvn(
         num_params=NUM_PARAMS,
         lkj_concentration=lkj_concentration,
         inverse_gamma_scale=inverse_gamma_scale,
+        inverse_gamma_concentration=inverse_gamma_concentration,
         mu_loc=mu_loc,
         mu_scale=mu_scale,
     )
@@ -49,6 +51,7 @@ def sample_conditional_crdm_hierarchical_lkj_mvn(
     inverse_gamma_scale,
     mu_loc,
     mu_scale,
+    inverse_gamma_concentration=4.0,
     lkj_concentration=2.0,
     dt=0.001, t_max=4.0,
 ):
@@ -75,6 +78,7 @@ def sample_conditional_crdm_hierarchical_lkj_mvn(
     prior = create_hierarchical_crdm_prior_lkj_mvn(
         num_subjects,
         inverse_gamma_scale=inverse_gamma_scale,
+        inverse_gamma_concentration=inverse_gamma_concentration,
         mu_loc=mu_loc,
         mu_scale=mu_scale,
         lkj_concentration=lkj_concentration,
