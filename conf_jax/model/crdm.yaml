@@ -61,5 +61,11 @@ hierarchical:
     # conflict sensitivity and pulse amplitude than the x4 rule would imply.
     inverse_gamma_concentration: 15.0
     inverse_gamma_scale:    [1.6, 2.0, 2.5, 1.6, 1.6, 1.6, 1.0]
-    mu_loc:                 [0.1, 0.5, -1.4, -2.2, 0.0, 0.0, -1.2]
+    # mu_loc[1] = 0.92 puts the median of v_c_slope at exp(0.92) = 2.51.  The
+    # marginal median of a subject parameter is exactly exp(mu_loc), since
+    # log(theta) is symmetric about mu_loc once mu and z are integrated out.
+    # Raising it also shifts v_c_true = v_c_intercept + v_c_slope, whose median
+    # goes 2.78 -> 3.64 and max 6.88 -> 9.88; v_c_max in the training prior is
+    # raised to 14.0 to keep the headroom that move would otherwise consume.
+    mu_loc:                 [0.1, 0.92, -1.4, -2.2, 0.0, 0.0, -1.2]
     mu_scale:               [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.1]

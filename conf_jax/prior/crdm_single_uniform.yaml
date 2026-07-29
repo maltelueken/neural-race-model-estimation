@@ -9,14 +9,20 @@
 # new limits give every axis at least ~1.4x headroom over the observed max.
 # tau is untouched: it tops out at 0.27, so 1.0 is already 3.7x.
 #
-# Cost: the box grows 5.2x (72 -> 375) and censoring at t_max = 4.0 rises from
-# 2.58% to 3.66% -- handled by the right-censored MLE.  Note the censoring rise
-# comes from s_max/b_max, not v_c_max: raising v_c_max speeds crossings and so
-# *lowers* censoring (a v_c_max of 8.0 with the same s/b gives 4.74%).
-# Scale train_steps up for the extra volume.
+# v_c_max is 14.0 rather than 10.0 because mu_loc[1] in the hierarchical prior
+# puts the median of v_c_slope at 2.51, which carries v_c_true (= v_c_intercept
+# + v_c_slope) up to a max of 9.88.  At v_c_max = 10.0 that is 1.01x headroom --
+# no margin at all, and the condition that degenerates NUTS adaptation.
+#
+# Cost: the box grows 7.3x over the original (72 -> 525), so scale train_steps
+# up to match.  Censoring at t_max = 4.0 does *not* worsen -- it is 2.47% here
+# against 2.58% for the original box, because s_max/b_max (which slow crossings
+# and so raise censoring) are offset by the higher v_c ceiling, which speeds
+# them.  The same trade in isolation: v_c_max 8.0 with these s/b gives 4.74%,
+# v_c_max 10.0 gives 3.66%.
 _target_: confrdm_jax.simulators.create_crdm_single_prior_uniform
 v_c_min: 0.0
-v_c_max: 10.0
+v_c_max: 14.0
 amp_min: 0.0
 amp_max: 1.5
 tau_min: 0.0
