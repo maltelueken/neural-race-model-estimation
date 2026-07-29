@@ -56,6 +56,11 @@ jax.config.update('jax_enable_x64', True)
 # Column names for observed data; RDM has 2 cols, CRDM has 3.
 _DATA_COL_NAMES = ["rt", "choice", "condition"]
 
+# Below this, window adaptation has collapsed rather than converged: healthy
+# chains on these posteriors land at 0.06-0.16, so anything here is 2-3 orders
+# of magnitude out and the chain would not move at all during mutation.
+DEGENERATE_STEP_SIZE = 1e-4
+
 
 def sample_prior_particles(prior, bijector, num_particles, rng_key):
     """Draw particles from the hierarchical prior in unconstrained flat space.
@@ -385,14 +390,37 @@ def main(cfg):
 
         # Chains adapt independently, so the degenerate-step-size repair has to
         # be a per-chain select rather than the scalar Python branch it was.
+        #
+        # The replacement is the median of the chains that adapted successfully,
+        # not a constant.  A collapsed step size is not a property of the
+        # posterior — the sibling chains are sampling the same one — so the
+        # scale they agreed on is the best available estimate.  The constant
+        # 1e-3 this used to substitute was ~80x below its siblings, and with a
+        # fixed num_integration_steps that is an ~80x shorter trajectory: the
+        # cloud stops moving, rides the tempering schedule frozen, and settles
+        # somewhere the other chains do not.  Measured on the 100k-step RDM
+        # conditioner, populations 1 and 2 each lost one chain this way and had
+        # max split-Rhat 3.74 and 9.42; over the three surviving chains the same
+        # posteriors give 1.06 and 1.01.  The analytic likelihood on the same
+        # data never degenerates (12/12 chains at 0.126-0.157), so this is a
+        # warm-up failure, not a defect in the approximate likelihood.
         step_sizes = adapted_params["step_size"]
-        degenerate = step_sizes < 1e-4
-        if bool(jnp.any(degenerate)):
-            logger.warning(
-                "Degenerate step size in %d/%d chains after warmup — overriding to 1e-3",
-                int(jnp.sum(degenerate)), num_chains,
+        degenerate = step_sizes < DEGENERATE_STEP_SIZE
+        num_degenerate = int(jnp.sum(degenerate))
+        if num_degenerate == num_chains:
+            logger.error(
+                "All %d chains produced a degenerate step size after warmup; "
+                "leaving them untouched — these results are not usable",
+                num_chains,
             )
-        step_sizes = jnp.where(degenerate, 1e-3, step_sizes)
+        elif num_degenerate:
+            replacement = float(jnp.median(step_sizes[~degenerate]))
+            logger.warning(
+                "Degenerate step size in %d/%d chains after warmup — overriding "
+                "to the median of the %d healthy chains (%.4g)",
+                num_degenerate, num_chains, num_chains - num_degenerate, replacement,
+            )
+            step_sizes = jnp.where(degenerate, replacement, step_sizes)
         logger.info("Adapted step sizes per chain: %s", np.asarray(step_sizes))
 
         # One prior cloud per chain.  Sharing a single cloud left any gap in that
