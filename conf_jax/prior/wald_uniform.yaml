@@ -1,7 +1,23 @@
+# Training prior for the RDM flow -- the box the conditioner is fitted over.
+#
+# This is NOT an inference prior: it defines where the flow's density is
+# trustworthy.  Outside it the spline flow extrapolates, and its log-density
+# develops gradient spikes and dead-flat plateaus that collapse NUTS step-size
+# adaptation and freeze the SMC particle cloud (see the hierarchical recovery
+# notes).  So the box must cover everything the sampler can plausibly visit,
+# not just the bulk of the hierarchical prior.
+#
+# s_max/b_max were 3.0, which the hierarchical prior in conf_jax/model/rdm.yaml
+# overran: s_true reached 4.07 and b 3.37.  At 5.0 both fit with ~20-50% margin.
+# v_max stays at 8.0 -- v_c_true tops out at 4.96, so it already has 1.6x
+# headroom and widening it would only cost volume.
+#
+# Cost of the change: the box grows 2.8x (72 -> 200), so the flow has less
+# training density per unit volume.  Scale train_steps up accordingly.
 _target_: confrdm_jax.simulators.create_wald_prior_uniform
 v_min: 0.0
 v_max: 8.0
 s_min: 0.0
-s_max: 3.0
+s_max: 5.0
 b_min: 0.0
-b_max: 3.0
+b_max: 5.0
