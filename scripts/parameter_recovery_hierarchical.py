@@ -61,6 +61,11 @@ _DATA_COL_NAMES = ["rt", "choice", "condition"]
 # of magnitude out and the chain would not move at all during mutation.
 DEGENERATE_STEP_SIZE = 1e-4
 
+# Highest fraction of a subject's fastest RT that `t0` may take at
+# initialisation.  Below 1.0 by a margin because the density just inside the
+# boundary is still steep — the aim is to start off the wall, not next to it.
+T0_INIT_MAX_FRACTION = 0.9
+
 
 def sample_prior_particles(prior, bijector, num_particles, rng_key):
     """Draw particles from the hierarchical prior in unconstrained flat space.
@@ -86,6 +91,56 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
         return flat
 
     return jax.vmap(sample_and_ravel)(keys)
+
+
+def _clip_t0_into_support(flat_params, unravel_fn, min_rt):
+    """Pull each subject's ``t0`` below its fastest observed RT.
+
+    The likelihood is undefined for ``t0 >= min(rt)``, and
+    ``_penalize_invalid_rt`` covers that region with a slope-1e3 penalty whose
+    whole purpose is to shove `t0` back down.  A chain that *starts* there
+    therefore starts on a wall: window adaptation sees divergence after
+    divergence and its only response is to shrink the step size, which does not
+    help because the wall is not a curvature scale.  `parameter_recovery.py`
+    has handled this since the single-subject study — see `_overdispersed_init`
+    there, and the support requirement stated in `warmup_multiple_chains`'s
+    docstring — but the hierarchical script drew its starts straight from the
+    prior, where each of the 20 subjects gets an independent `t0` and only one
+    of them has to land high for the chain to be ruined.
+
+    That is measurably what happened.  On the 500k-step RDM conditioner, in
+    every population that produced a degenerate step size the degenerate chain
+    was exactly the chain with the most violating subjects (pop 0: 1 of 20,
+    chain 3; pop 1: 7, chain 2; pop 2: 5, chain 2), and each was also the chain
+    that broke R-hat (1.94 / 2.60 / 2.76, falling to 1.006 / 1.031 / 1.005 once
+    dropped).  Population 3, the only one with no violation in any chain, is
+    also the only one that needed no repair and converged at 1.004.
+
+    Clipping rather than overwriting keeps the prior draw's dispersion wherever
+    it was already inside the support, so only the offending subjects move.
+
+    Args:
+        flat_params: Flat unconstrained particles, shape ``(N, D)``.
+        unravel_fn: Inverse of the ravel used to build them.
+        min_rt: Per-subject smallest *valid* RT, shape ``(S,)``. Callers must
+            exclude the ``-1.0`` censoring sentinel before computing it.
+
+    Returns:
+        `flat_params` with ``log(t0)`` capped at
+        ``log(T0_INIT_MAX_FRACTION * min_rt)`` subject by subject.
+    """
+    log_t0_max = jnp.log(T0_INIT_MAX_FRACTION * min_rt)  # (S,)
+
+    def clip_one(flat):
+        params = unravel_fn(flat)
+        # theta_bt is identity-bijected, so its columns are already log(b),
+        # log(t0) and the cap applies directly with no round-trip.
+        theta_bt = params["theta_bt"].at[:, -1].set(
+            jnp.minimum(params["theta_bt"][:, -1], log_t0_max),
+        )
+        return jfu.ravel_pytree({**params, "theta_bt": theta_bt})[0]
+
+    return jax.vmap(clip_one)(flat_params)
 
 
 def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
@@ -315,7 +370,9 @@ def main(cfg):
         "theta_bt": tfb.Identity(),           # log(b), log(t0) -> Real
     })
 
-    def recover_population(sampling_key, data, mask, create_likelihood_fun, unravel_fn):
+    def recover_population(
+        sampling_key, data, mask, create_likelihood_fun, unravel_fn, min_rt,
+    ):
         """Run tempered SMC to recover hierarchical parameters for one population.
 
         Returns:
@@ -369,8 +426,14 @@ def main(cfg):
         # unconstrained flat space the sampler works in.  Starting every chain
         # from `prior.mode()` made the adaptation — and therefore the mutation
         # kernel every chain shares — a single draw with no variability at all.
-        init_positions = sample_prior_particles(
-            prior, bijector, num_chains, init_key,
+        #
+        # The dispersion has to be support-aware, though: see
+        # `_clip_t0_into_support` for why an unclipped prior draw is what put a
+        # chain on the `t0 >= min(rt)` wall in three of five populations.
+        init_positions = _clip_t0_into_support(
+            sample_prior_particles(prior, bijector, num_chains, init_key),
+            unravel_fn,
+            min_rt,
         )
 
         # One window adaptation per chain.  target_acceptance_rate=0.8 avoids the
@@ -402,9 +465,22 @@ def main(cfg):
         # conditioner, populations 1 and 2 each lost one chain this way and had
         # max split-Rhat 3.74 and 9.42; over the three surviving chains the same
         # posteriors give 1.06 and 1.01.  The analytic likelihood on the same
-        # data never degenerates (12/12 chains at 0.126-0.157), so this is a
-        # warm-up failure, not a defect in the approximate likelihood.
+        # data never degenerates, so this is a warm-up failure, not a defect in
+        # the approximate likelihood.
+        #
+        # The mass matrix has to be repaired with it.  Both come out of the same
+        # adaptation, and a warm-up whose step size collapsed is one that barely
+        # moved, so its sample-variance estimate is near zero and the resulting
+        # inverse mass matrix shrinks the mutation velocity M^-1 p by just as
+        # much as the step size did.  Repairing only the step size — as the
+        # first version of this guard did — therefore changed nothing: on the
+        # 500k conditioner the repaired chain still broke R-hat in all three
+        # affected populations (1.94 / 2.60 / 2.76), and its posterior came out
+        # *under*-dispersed rather than misplaced, 0.16-0.83x its siblings' SD
+        # and worst on the population SDs.  That is a cloud that resampling
+        # collapses faster than mutation can rediversify it.
         step_sizes = adapted_params["step_size"]
+        mass_matrices = adapted_params["inverse_mass_matrix"]
         degenerate = step_sizes < DEGENERATE_STEP_SIZE
         num_degenerate = int(jnp.sum(degenerate))
         if num_degenerate == num_chains:
@@ -414,20 +490,42 @@ def main(cfg):
                 num_chains,
             )
         elif num_degenerate:
-            replacement = float(jnp.median(step_sizes[~degenerate]))
+            healthy = ~degenerate
+            replacement = float(jnp.median(step_sizes[healthy]))
+            # Element-wise median over the healthy chains, matching the scalar
+            # step-size rule; a mass matrix is a per-coordinate scale estimate,
+            # so it averages coordinate by coordinate.
+            replacement_mass = jnp.median(mass_matrices[healthy], axis=0)
             logger.warning(
                 "Degenerate step size in %d/%d chains after warmup — overriding "
-                "to the median of the %d healthy chains (%.4g)",
+                "step size and mass matrix to the median of the %d healthy "
+                "chains (step size %.4g)",
                 num_degenerate, num_chains, num_chains - num_degenerate, replacement,
             )
             step_sizes = jnp.where(degenerate, replacement, step_sizes)
+            mass_matrices = jnp.where(
+                degenerate.reshape((-1,) + (1,) * (mass_matrices.ndim - 1)),
+                replacement_mass,
+                mass_matrices,
+            )
         logger.info("Adapted step sizes per chain: %s", np.asarray(step_sizes))
 
         # One prior cloud per chain.  Sharing a single cloud left any gap in that
         # one draw invisible to every between-chain comparison.
+        #
+        # Clipped for the same reason as the warm-up starts.  It matters less
+        # here — SMC starts at lambda = 0, where the target is the prior and the
+        # likelihood is not consulted — but a particle whose `t0` is above some
+        # subject's fastest RT takes the full 1e3 penalty at the first tempering
+        # increment and is resampled away, so leaving them in just burns
+        # effective particles.
         initial_particles = jax.vmap(
-            lambda key: sample_prior_particles(
-                prior, bijector, smc_cfg["num_particles"], key,
+            lambda key: _clip_t0_into_support(
+                sample_prior_particles(
+                    prior, bijector, smc_cfg["num_particles"], key,
+                ),
+                unravel_fn,
+                min_rt,
             ),
         )(jax.random.split(cloud_key, num_chains))
 
@@ -478,7 +576,7 @@ def main(cfg):
             (
                 jax.random.split(chain_key, num_chains),
                 step_sizes,
-                adapted_params["inverse_mass_matrix"],
+                mass_matrices,
                 initial_particles,
             ),
         )
@@ -513,6 +611,13 @@ def main(cfg):
         # All subjects have the same trial count, mask is all True
         mask = jnp.ones((num_subjects, num_trials), dtype=bool)
 
+        # Per-subject support bound for `t0`, with the -1.0 censoring sentinel
+        # excluded.  Per subject, not pooled: `t0` is a subject-level parameter,
+        # so pooling would let a fast subject's floor license a start above a
+        # slow subject's fastest trial.
+        rt = data[:, :, 0]
+        min_rt = jnp.min(jnp.where(rt > 0.0, rt, jnp.inf), axis=1)
+
         # Reconstruct interpretable subject-level parameters from prior samples
         L_true = context['s'][:, None] * context['psi_raw']                  # (P, P)
         L_ncp_true = L_true[:num_params_ncp, :num_params_ncp]                # (P_ncp, P_ncp)
@@ -528,7 +633,7 @@ def main(cfg):
         sampling_key, approx_key = jax.random.split(sampling_key)
 
         particles, weights, n_iter, initial_particles = recover_population(
-            approx_key, data, mask, likelihood_factory_approx, unravel_fn,
+            approx_key, data, mask, likelihood_factory_approx, unravel_fn, min_rt,
         )
         logger.info("SMC converged in %s iterations", n_iter)
 
@@ -577,7 +682,7 @@ def main(cfg):
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
             particles_ref, weights_ref, n_iter_ref, _ = recover_population(
-                ref_key, data, mask, ref_likelihood, unravel_fn,
+                ref_key, data, mask, ref_likelihood, unravel_fn, min_rt,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
 
