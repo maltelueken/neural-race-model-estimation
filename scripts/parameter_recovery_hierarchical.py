@@ -45,6 +45,7 @@ from tensorflow_probability.substrates.jax import bijectors as tfb
 from confrdm_jax.flows import load_conditioner
 from confrdm_jax.flows import make_mlp_conditioner
 from confrdm_jax.mcmc import warmup_multiple_chains
+from confrdm_jax.smc import count_unique_particles
 from confrdm_jax.smc import smc_inference_loop
 
 logger = logging.getLogger(__name__)
@@ -316,6 +317,8 @@ def _build_population_datatree(
     particles,
     weights,
     n_iter,
+    num_unique,
+    num_unique_smc,
     data,
     context,
     log_theta_true,
@@ -362,6 +365,15 @@ def _build_population_datatree(
             ignoring the weights would have moved the posterior — so it is the
             per-run indicator of whether the final resample mattered.
         n_iter: Per-chain SMC iteration counts, shape ``(num_chains,)``.
+        num_unique: Distinct particles per chain in `particles`, shape
+            ``(num_chains,)``. Below `num_particles` the stored draws repeat,
+            and every downstream ESS and R-hat overstates what was sampled by
+            roughly that ratio — the weights cannot show this, since a
+            collapsed cloud is still uniformly weighted.
+        num_unique_smc: Distinct particles per chain *before* the final
+            resample, shape ``(num_chains,)``. The mutation kernel's own
+            output, so the gap between the two attributes the loss to
+            resampling rather than to `num_mcmc_steps`.
         data: Observed data, shape ``(S, T, num_data_cols)``.
         context: Dict of true prior parameters from the sampler.
         log_theta_true: True subject log-parameters, shape ``(S, P)``.
@@ -444,6 +456,10 @@ def _build_population_datatree(
 
     # Store scalar/per-chain metadata as attributes
     dt.attrs["smc_n_iter"]    = np.array(n_iter).tolist()
+    # Read these next to `posterior`'s draw count: any shortfall is the factor
+    # by which the stored ESS is optimistic.
+    dt.attrs["smc_num_unique"]     = np.array(num_unique).tolist()
+    dt.attrs["smc_num_unique_pre_resample"] = np.array(num_unique_smc).tolist()
     dt.attrs["pop_idx"]       = pop_idx
     dt.attrs["num_subjects"]  = num_subjects
     dt.attrs["param_names"]   = param_names
@@ -516,9 +532,12 @@ def main(cfg):
         """Run tempered SMC to recover hierarchical parameters for one population.
 
         Returns:
-            ``(particles, weights, n_iter, initial_particles)``. `particles` are
-            resampled against the final weights and so are equally weighted;
-            `weights` are retained as a diagnostic only. All four carry a
+            ``(particles, weights, n_iter, initial_particles, num_unique,
+            num_unique_smc)``. `particles` are resampled against the final
+            weights and so are equally weighted; `weights` are retained as a
+            diagnostic only. The two `num_unique` counts say how many of those
+            equally weighted particles are actually distinct — see
+            :func:`~confrdm_jax.smc.count_unique_particles`. All six carry a
             leading `num_chains` axis.
 
         Chains run through ``jax.lax.map``, not ``vmap``, so they are
@@ -720,11 +739,24 @@ def main(cfg):
             idx = resampling.systematic(
                 resample_key, state.weights, smc_cfg["num_particles"],
             )
-            return n_iter, state.particles[idx], state.weights
+            resampled = state.particles[idx]
+
+            # Counted on both sides of that resample.  The cloud SMC arrived at
+            # is the measure of how much diversity `num_mcmc_steps` mutation
+            # preserved; the resampled cloud is what the `.nc` stores and what
+            # every downstream R-hat and ESS is computed from, and one more
+            # resample can only lose distinct particles, never gain them.
+            return (
+                n_iter,
+                resampled,
+                state.weights,
+                count_unique_particles(state.particles),
+                count_unique_particles(resampled),
+            )
 
         # `weights` are kept only as a diagnostic: their ESS says how much the
         # resample above actually did.  They no longer index `particles`.
-        n_iter, particles, weights = jax.lax.map(
+        n_iter, particles, weights, num_unique_smc, num_unique = jax.lax.map(
             lambda xs: run_chain(*xs),
             (
                 jax.random.split(chain_key, num_chains),
@@ -738,7 +770,33 @@ def main(cfg):
         logger.info("Final-increment weight ESS per chain: %s",
                     np.round(np.asarray(weight_ess), 3))
 
-        return particles, weights, n_iter, initial_particles
+        # Distinct particles, before and after the final resample.  The weight
+        # ESS above cannot see this: a cloud collapsed onto a handful of values
+        # still carries uniform weights.  See `count_unique_particles`.
+        num_particles = smc_cfg["num_particles"]
+        logger.info(
+            "Distinct particles per chain: %s of %d after SMC, %s after the "
+            "final resample",
+            np.asarray(num_unique_smc).tolist(), num_particles,
+            np.asarray(num_unique).tolist(),
+        )
+        min_fraction = smc_cfg["min_unique_fraction"]
+        if bool(jnp.any(num_unique < min_fraction * num_particles)):
+            # Which of the two counts is low says which stage to blame, so the
+            # warning reports both rather than naming a single cause.
+            logger.warning(
+                "Particle degeneracy: only %s of %d stored draws per chain are "
+                "distinct, below the %.0f%% floor, so their ESS and R-hat "
+                "overstate what was sampled. Distinct before the final "
+                "resample: %s. If that is low too, mutation is not "
+                "rediversifying and hierarchical_recovery.smc.num_mcmc_steps "
+                "should go up; if it is full, the loss is the final resample "
+                "against non-uniform weights.",
+                np.asarray(num_unique).tolist(), num_particles,
+                100 * min_fraction, np.asarray(num_unique_smc).tolist(),
+            )
+
+        return particles, weights, n_iter, initial_particles, num_unique, num_unique_smc
 
     # Generate and recover for each population
     test_key = jax.random.key(cfg["test_seed"])
@@ -785,8 +843,10 @@ def main(cfg):
         logger.info("Running approximate recovery...")
         sampling_key, approx_key = jax.random.split(sampling_key)
 
-        particles, weights, n_iter, initial_particles = recover_population(
-            approx_key, data, mask, likelihood_factory_approx, unravel_fn, min_rt,
+        particles, weights, n_iter, initial_particles, num_unique, num_unique_smc = (
+            recover_population(
+                approx_key, data, mask, likelihood_factory_approx, unravel_fn, min_rt,
+            )
         )
         logger.info("SMC converged in %s iterations", n_iter)
 
@@ -814,6 +874,8 @@ def main(cfg):
             particles=particles,
             weights=weights,
             n_iter=n_iter,
+            num_unique=num_unique,
+            num_unique_smc=num_unique_smc,
             data=data,
             context=context,
             log_theta_true=log_theta_true,
@@ -836,10 +898,11 @@ def main(cfg):
             sampling_key, ref_key = jax.random.split(sampling_key)
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
-            particles_ref, weights_ref, n_iter_ref, initial_particles_ref = (
-                recover_population(
-                    ref_key, data, mask, ref_likelihood, unravel_fn, min_rt,
-                )
+            (
+                particles_ref, weights_ref, n_iter_ref, initial_particles_ref,
+                num_unique_ref, num_unique_smc_ref,
+            ) = recover_population(
+                ref_key, data, mask, ref_likelihood, unravel_fn, min_rt,
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
 
@@ -847,6 +910,8 @@ def main(cfg):
                 particles=particles_ref,
                 weights=weights_ref,
                 n_iter=n_iter_ref,
+                num_unique=num_unique_ref,
+                num_unique_smc=num_unique_smc_ref,
                 data=data,
                 context=context,
                 log_theta_true=log_theta_true,

@@ -112,3 +112,13 @@ hierarchical_recovery:
     num_integration_steps: 100
     num_mcmc_steps: 1
     target_ess: 0.5
+
+    # Warn when a chain ends with fewer than this fraction of its particles
+    # distinct. Resampling duplicates particles and num_mcmc_steps mutation
+    # moves rediversify them only where the proposals are accepted, so at
+    # num_mcmc_steps = 1 duplicates can compound across tempering iterations.
+    # Nothing else detects it: a collapsed cloud is still uniformly weighted,
+    # so the final-increment weight ESS stays near 1.0 while the stored draws
+    # repeat and their R-hat and ESS overstate what was sampled. The counts go
+    # to the .nc as smc_num_unique / smc_num_unique_pre_resample.
+    min_unique_fraction: 0.5
