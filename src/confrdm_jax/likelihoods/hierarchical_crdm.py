@@ -11,7 +11,12 @@ time-varying drift and no closed-form first-passage density, which is the whole
 reason the flow exists.  ``likelihoods.crdm_volterra`` provides a numerical
 reference for the single-subject case.
 
-The censoring-sentinel gap documented in ``likelihoods.crdm`` applies here too.
+Censoring is handled as in ``likelihoods.crdm`` — pass the simulator's
+``t_max`` and trials carrying the ``rt = -1.0`` sentinel are scored by
+``log S_true(t_max) + log S_false(t_max)`` instead of taking the invalid-RT
+penalty. It matters more here than in the single-subject case: ``t0`` is
+per subject, so an unhandled sentinel would drag only its own subject's ``t0``
+with nothing pooling the damage away.
 """
 
 import jax
@@ -19,6 +24,8 @@ import jax.numpy as jnp
 from flax import nnx
 
 from confrdm_jax.flows import evaluate_pdf_sf
+from .rdm import _apply_censoring
+from .rdm import _censored_eval_rt
 from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
@@ -26,11 +33,17 @@ from .rdm import inv_gauss_log_pdf_sf
 _FLOOR = 1e-10
 
 
-def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
+def create_crdm_hierarchical_likelihood_factory_approx(conditioner, t_max=None):
     """Factory for hierarchical neural-approximate likelihood for multi-subject CRDM.
 
     Args:
         conditioner: Trained neural network conditioner for density estimation.
+        t_max: Integration horizon of the simulator that produced the data, on
+            the **decision-time** scale, used to score censored trials; see
+            :func:`~confrdm_jax.likelihoods.rdm._censored_eval_rt`. Leave
+            ``None`` only for data that cannot contain the ``rt = -1.0``
+            sentinel. Wired from ``model.hierarchical.test_sampler.t_max`` in
+            ``conf_jax/model/crdm.yaml``.
 
     Returns:
         A function `create_likelihood(data, mask)` returning
@@ -82,11 +95,18 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
             tau_arr = jnp.tile(tau, nn_v_c.shape)
             b_arr = jnp.tile(b, nn_v_c.shape)
 
+            # Censored trials are evaluated at the horizon instead of at the
+            # sentinel, so both accumulators yield S(t_max); the substitution
+            # is free because it reuses the evaluation below.
+            rt_eval, is_censored = _censored_eval_rt(rt, t0, t_max)
+
             # Neural network for the accumulator with conflict modulation
-            nn_log_pdf, nn_log_sf = crdm_log_pdf_sf(rt, nn_v_c, amp_arr, tau_arr, nn_s, b_arr, t0)
+            nn_log_pdf, nn_log_sf = crdm_log_pdf_sf(
+                rt_eval, nn_v_c, amp_arr, tau_arr, nn_s, b_arr, t0,
+            )
 
             # Analytic inverse Gaussian for the other accumulator
-            ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt, ig_v_c, ig_s, b, t0)
+            ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt_eval, ig_v_c, ig_s, b, t0)
 
             # Both branches are already clamped and penalised by
             # _penalize_invalid_rt; clamping again here would erase the
@@ -107,6 +127,10 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner):
             dens_choice_0 = log_pdf_false + log_sf_true
 
             ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
+
+            # A censored trial has no winner: both accumulators survive to
+            # t_max, so it contributes both survival factors and no density.
+            ll = _apply_censoring(is_censored, log_sf_true, log_sf_false, ll)
 
             return jnp.sum(jnp.where(subject_mask, ll, 0.0))
 

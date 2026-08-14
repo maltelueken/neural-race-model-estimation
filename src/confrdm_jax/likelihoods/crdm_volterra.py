@@ -34,7 +34,7 @@ import jax.numpy as jnp
 from jax.scipy import stats
 
 from confrdm_jax.simulators.crdm_utils import normalized_gamma, normalized_gamma_derivative
-from .rdm import inv_gauss_log_pdf_sf, _penalize_invalid_rt
+from .rdm import inv_gauss_log_pdf_sf, _penalize_invalid_rt, _censored_eval_rt, _apply_censoring
 
 def integrated_drift(t, v_c, amp, tau, a_shape=2.0):
     """M(t): the accumulator's mean position at time `t`, starting from 0.
@@ -165,7 +165,7 @@ def crdm_volterra_log_pdf_sf(rt, v_c, amp, tau, s, b, t0, dt, num_steps):
     return _penalize_invalid_rt(rt_shifted, log_pdf, log_sf)
 
 
-def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
+def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0, censor_t_max=None):
     """Create CRDM likelihood using Volterra integral equation solver.
 
     Follows the same pattern as create_crdm_likelihood_factory_approx: the
@@ -176,7 +176,18 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
         data: Trial data with columns [RT, choice, condition].
             condition: 1 = Congruent, 0 = Incongruent.
         dt: Time step for Volterra solver.
-        t_max: Maximum time for the solver grid.
+        t_max: Maximum time for the solver **grid**. This is a numerical
+            resolution choice for this solver and is deliberately *not* reused
+            as the censoring horizon — the two coincide at their defaults but
+            need not, and silently conflating them would misplace the survival
+            function if the grid were shortened for speed.
+        censor_t_max: Integration horizon of the **simulator** that produced
+            `data`, on the decision-time scale. Trials carrying the
+            ``rt = -1.0`` sentinel are then scored by
+            ``log S_true + log S_false`` at that horizon; see
+            :func:`~confrdm_jax.likelihoods.rdm._censored_eval_rt`. ``None``
+            leaves the sentinel to the invalid-RT penalty, which is only safe
+            for data known to contain none.
 
     Returns:
         A JIT-compiled likelihood function.
@@ -199,19 +210,27 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
         b = x[5]
         t0 = x[6]
 
+        # Censored trials are evaluated at the simulator's horizon instead of
+        # at the sentinel, so every accumulator yields S(censor_t_max).
+        rt_eval, is_censored = _censored_eval_rt(rt, t0, censor_t_max)
+
         # Volterra density for congruent condition (true accumulator conflicted)
         con_log_pdf, con_log_sf = crdm_volterra_log_pdf_sf(
-            rt, v_c_true, amp, tau, s_true, b, t0, dt, num_steps,
+            rt_eval, v_c_true, amp, tau, s_true, b, t0, dt, num_steps,
         )
 
         # Volterra density for incongruent condition (false accumulator conflicted)
         inc_log_pdf, inc_log_sf = crdm_volterra_log_pdf_sf(
-            rt, v_c_false, amp, tau, s_false, b, t0, dt, num_steps,
+            rt_eval, v_c_false, amp, tau, s_false, b, t0, dt, num_steps,
         )
 
         # Analytical inverse Gaussian for the non-conflicted accumulator
-        ig_log_pdf_false, ig_log_sf_false = inv_gauss_log_pdf_sf(rt, v_c_false, s_false, b, t0)
-        ig_log_pdf_true, ig_log_sf_true = inv_gauss_log_pdf_sf(rt, v_c_true, s_true, b, t0)
+        ig_log_pdf_false, ig_log_sf_false = inv_gauss_log_pdf_sf(
+            rt_eval, v_c_false, s_false, b, t0,
+        )
+        ig_log_pdf_true, ig_log_sf_true = inv_gauss_log_pdf_sf(
+            rt_eval, v_c_true, s_true, b, t0,
+        )
 
         # Route based on condition
         # Congruent: CRDM=true acc, InvGauss=false acc
@@ -226,6 +245,10 @@ def create_crdm_likelihood_volterra(data, dt=0.001, t_max=4.0):
         dens_choice_1 = log_pdf_true + log_sf_false
         dens_choice_0 = log_pdf_false + log_sf_true
 
-        return jnp.where(choice == 1, dens_choice_1, dens_choice_0)
+        ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
+
+        # A censored trial has no winner: both accumulators survive to the
+        # horizon, so it contributes both survival factors and no density.
+        return _apply_censoring(is_censored, log_sf_true, log_sf_false, ll)
 
     return likelihood_fun

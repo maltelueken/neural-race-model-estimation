@@ -16,6 +16,10 @@ test_sampler:
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_crdm_likelihood_factory_approx
   _partial_: true
+  # Censoring horizon, so `rt = -1.0` sentinels are scored by log S(t_max)
+  # rather than taking the invalid-RT penalty.  Interpolated from the sampler
+  # that produces the data, so the two cannot drift apart.
+  t_max: ${model.test_sampler.t_max}
 
 run_reference_recovery: false
 
@@ -37,6 +41,7 @@ hierarchical:
   likelihood_factory_approx:
     _target_: confrdm_jax.likelihoods.create_crdm_hierarchical_likelihood_factory_approx
     _partial_: true
+    t_max: ${model.hierarchical.test_sampler.t_max}
   prior:
     lkj_concentration: 2.0
     # See conf_jax/model/rdm.yaml for the rationale: concentration is the tail

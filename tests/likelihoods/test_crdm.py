@@ -110,3 +110,102 @@ class TestCrdmLikelihoodFactoryApprox:
         ll_incong = create_likelihood(data_incong)
 
         assert not jnp.allclose(jnp.sum(ll_cong(crdm_params)), jnp.sum(ll_incong(crdm_params)))
+
+
+class TestCrdmCensoring:
+    """Right-censoring of the ``rt = -1.0`` sentinel in the CRDM likelihoods.
+
+    A trial that never crossed is the observation ``T > t_max``, whose racing
+    likelihood is ``S_true(t_max) * S_false(t_max)``.  Without `t_max` the
+    sentinel falls into the ``rt <= t0`` branch of ``_penalize_invalid_rt``
+    instead and contributes ~-1300 with a gradient driving ``t0`` to zero.
+    """
+
+    T_MAX = 4.0
+
+    def _censored(self, key, n_trials=20, n_censored=3):
+        data = _make_crdm_mock_data(key, n_trials)
+        return data.at[:n_censored, 0].set(-1.0).at[:n_censored, 1].set(-1.0)
+
+    def test_no_sentinel_is_bit_identical(self, crdm_conditioner, crdm_params):
+        """With no censored trials, passing t_max must change nothing at all."""
+        data = _make_crdm_mock_data(jax.random.PRNGKey(20))
+        off = create_crdm_likelihood_factory_approx(crdm_conditioner)(data)
+        on = create_crdm_likelihood_factory_approx(
+            crdm_conditioner, t_max=self.T_MAX,
+        )(data)
+        assert jnp.array_equal(off(crdm_params), on(crdm_params))
+
+    def test_censored_trials_scored_by_survival(self, crdm_conditioner, crdm_params):
+        """Censored trials get log S_true(t_max) + log S_false(t_max), not the penalty."""
+        data = self._censored(jax.random.PRNGKey(21))
+        off = create_crdm_likelihood_factory_approx(crdm_conditioner)(data)(crdm_params)
+        on = create_crdm_likelihood_factory_approx(
+            crdm_conditioner, t_max=self.T_MAX,
+        )(data)(crdm_params)
+
+        # Uncensored trials are untouched; censored ones leave the penalty regime.
+        assert jnp.array_equal(off[3:], on[3:])
+        assert jnp.all(off[:3] < -1000.0)
+        assert jnp.all(on[:3] > -1000.0)
+        # A survival probability is still a probability.
+        assert jnp.all(on[:3] < 0.0)
+
+    def test_censored_trial_has_no_t0_gradient(self, crdm_conditioner, crdm_params):
+        """A censored trial must contribute exactly zero gradient in ``t0``.
+
+        The horizon is on the *decision*-time scale — the simulator integrates
+        for ``t_max`` and only then adds ``t0`` — so "no crossing within
+        ``t_max``" carries no information about ``t0`` at all. Contrast the
+        unhandled sentinel, whose slope is ``-1e3`` per trial and is what
+        collapses window adaptation.
+        """
+        data = self._censored(jax.random.PRNGKey(22), n_trials=10, n_censored=10)
+
+        def total(params, t_max):
+            fn = create_crdm_likelihood_factory_approx(crdm_conditioner, t_max=t_max)
+            return jnp.sum(fn(data)(params))
+
+        g_off = jax.grad(total)(crdm_params, None)[6]
+        g_on = jax.grad(total)(crdm_params, self.T_MAX)[6]
+
+        # -1e3 per trial, times t0 for the log-space chain rule, times 10 trials.
+        assert jnp.isclose(g_off, -1e3 * jnp.exp(crdm_params[6]) * 10, rtol=1e-4)
+        assert g_on == 0.0
+
+    def test_hierarchical_censoring_is_per_subject(self, crdm_conditioner):
+        """Only the subjects that censor should have their own t0 gradient distorted."""
+        from confrdm_jax.likelihoods import (
+            create_crdm_hierarchical_likelihood_factory_approx,
+        )
+
+        n_subjects, n_trials = 3, 20
+        keys = jax.random.split(jax.random.PRNGKey(23), n_subjects)
+        data = jnp.stack([_make_crdm_mock_data(k, n_trials) for k in keys])
+        # Subject 2 alone censors one trial.
+        data = data.at[2, 0, 0].set(-1.0).at[2, 0, 1].set(-1.0)
+        mask = jnp.ones((n_subjects, n_trials), dtype=bool)
+        theta = jnp.log(
+            jnp.tile(jnp.array([1.0, 4.0, 0.3, 0.1, 0.8, 0.7, 0.3]), (n_subjects, 1)),
+        )
+
+        # Masking the censored trial out is the reference: since a censored
+        # trial carries no t0 information, keeping it must give the *same* t0
+        # gradient as dropping it. Comparing subject 2 against its siblings
+        # would confound this with its having one fewer scored trial.
+        mask_drop = mask.at[2, 0].set(False)
+
+        def grad_t0(t_max, m):
+            fn = create_crdm_hierarchical_likelihood_factory_approx(
+                crdm_conditioner, t_max=t_max,
+            )(data, m)
+            return jax.grad(lambda v: fn(theta.at[:, 6].set(v)))(theta[:, 6])
+
+        # Handled: keeping the sentinel is equivalent to dropping it, for t0.
+        assert jnp.allclose(
+            grad_t0(self.T_MAX, mask), grad_t0(self.T_MAX, mask_drop), atol=1e-5,
+        )
+        # Unhandled: it drags subject 2's own t0 and no one else's.
+        g_off, g_off_drop = grad_t0(None, mask), grad_t0(None, mask_drop)
+        assert jnp.allclose(g_off[:2], g_off_drop[:2], atol=1e-5)
+        assert jnp.abs(g_off[2] - g_off_drop[2]) > 100.0

@@ -78,6 +78,72 @@ def _penalize_invalid_rt(rt_shifted, log_pdf, log_sf):
     log_sf = jnp.where(valid, _clamp_log(log_sf), 0.0)
     return log_pdf, log_sf
 
+
+def _censored_eval_rt(rt, t0, t_max):
+    r"""Redirect the censoring sentinel onto the RT whose *decision* time is ``t_max``.
+
+    The CRDM simulators emit ``rt = -1.0`` when no accumulator crossed within
+    the integration horizon (see ``simulate_crdm_single_trial``).  That is the
+    observation :math:`T > t_{\max}`, not missing data, and its likelihood for
+    a race is :math:`S_1(t_{\max})\,S_2(t_{\max})` — *both* accumulators
+    still running.  Feeding the sentinel to a density instead sends
+    ``rt - t0 = -1 - t0`` into the invalid branch of
+    :func:`_penalize_invalid_rt`, which contributes about ``-1300`` per trial
+    with a gradient of ``-1e3`` driving ``t0`` to zero.  One such trial
+    outweighs roughly a thousand real ones.
+
+    Rather than evaluate the accumulators twice, this substitutes the input —
+    the same trick ``flows.loss_fn`` uses on the training side.  Censored
+    trials are evaluated at ``t_max + t0`` so that ``rt - t0`` is exactly
+    ``t_max``; their log-densities are then discarded by
+    :func:`_apply_censoring` and only their survival functions are kept.
+
+    **The horizon is on decision time, not RT.** ``simulate_crdm_single_trial``
+    integrates for ``num_steps * dt = t_max`` and only then adds ``t0``
+    (``rt = min_fpt + t0``), so a censored trial says the *decision* took
+    longer than ``t_max``. The censored contribution therefore carries no
+    ``t0`` dependence at all, which is the intended behaviour and the opposite
+    of the runaway gradient it replaces.
+
+    Args:
+        rt: Observed response times, possibly containing ``-1.0`` sentinels.
+        t0: Non-decision time.
+        t_max: Simulator integration horizon, or ``None`` for samplers that
+            cannot censor (the RDM path), in which case nothing is substituted.
+
+    Returns:
+        ``(rt_eval, is_censored)``. `is_censored` is ``None`` when `t_max` is,
+        which makes :func:`_apply_censoring` a no-op and keeps the result
+        bit-identical to the uncensored code path.
+    """
+    if t_max is None:
+        return rt, None
+    is_censored = rt < 0.0
+    return jnp.where(is_censored, t_max + t0, rt), is_censored
+
+
+def _apply_censoring(is_censored, log_sf_true, log_sf_false, log_lik):
+    """Score censored trials by ``log S_true(t_max) + log S_false(t_max)``.
+
+    The companion to :func:`_censored_eval_rt`, applied *after* the winner /
+    loser routing. Note the sum is routing-invariant — a censored trial has no
+    winner, and both accumulators contribute a survival factor — so which
+    accumulator the flow versus the inverse Gaussian handled does not matter
+    here.
+
+    Args:
+        is_censored: Mask from :func:`_censored_eval_rt`, or ``None`` to skip.
+        log_sf_true: Target accumulator's log survival at ``t_max``.
+        log_sf_false: Non-target accumulator's log survival at ``t_max``.
+        log_lik: Per-trial log-likelihood for the observed-response case.
+
+    Returns:
+        `log_lik` with the censored entries replaced.
+    """
+    if is_censored is None:
+        return log_lik
+    return jnp.where(is_censored, log_sf_true + log_sf_false, log_lik)
+
 @jax.jit
 def inv_gauss_logpdf(t, mu, lam):
     """Log density of the inverse Gaussian at `t`.

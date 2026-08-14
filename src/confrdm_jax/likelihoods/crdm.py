@@ -22,22 +22,30 @@ which keeps the computation traceable at the cost of doing roughly twice the
 work.  Parameter order is
 ``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``, in log space on entry.
 
-Known gap:
+Censoring:
     The simulators emit ``rt = -1.0`` for trials that never crossed within
-    ``t_max``, which is the observation ``T > t_max``. ``flows.loss_fn`` scores
-    that correctly by ``log S(t_max)``, but the likelihoods here route it into
-    the ``rt <= t0`` branch of ``_penalize_invalid_rt`` instead, contributing a
-    large negative penalty with a gradient that drives ``t0`` down. It is
-    unreachable under the configured recovery prior — the target accumulator's
-    drift of ~5 always crosses long before ``t_max = 4.0`` (measured: 0 of
-    10 000 trials censored, longest RT 0.99 s) — but it would become reachable
-    if ``t_max`` were shortened or the recovery prior widened toward low drift
-    or high boundary.
+    ``t_max``, which is the observation ``T > t_max``. Passing ``t_max`` to the
+    factory scores those by ``log S_true(t_max) + log S_false(t_max)`` — the
+    race analogue of the right-censored MLE ``flows.loss_fn`` already applies
+    on the training side. Without it they fall into the ``rt <= t0`` branch of
+    ``_penalize_invalid_rt`` and take a ~1300-nat penalty whose gradient drives
+    ``t0`` to zero.
+
+    This is a guard rail, not a correction to published numbers: censoring is
+    unreachable under the configured priors. The target accumulator always
+    crosses long before ``t_max = 4.0`` — measured 0 of 10 000 trials for the
+    single-subject sampler and 0 of 10 000 for the hierarchical one, longest RT
+    1.84 s, with an analytic bound over 400 000 hierarchical subject draws
+    putting the worst case at 0.3 expected censored trials in 250. It becomes
+    reachable if ``t_max`` is shortened or a prior widened toward low drift or
+    high boundary, and nothing enforces those margins.
 """
 
 import jax.numpy as jnp
 
 from confrdm_jax.flows import evaluate_pdf_sf
+from .rdm import _apply_censoring
+from .rdm import _censored_eval_rt
 from .rdm import _penalize_invalid_rt
 from .rdm import inv_gauss_log_pdf_sf
 
@@ -45,11 +53,19 @@ from .rdm import inv_gauss_log_pdf_sf
 _FLOOR = 1e-10
 
 
-def create_crdm_likelihood_factory_approx(conditioner):
+def create_crdm_likelihood_factory_approx(conditioner, t_max=None):
     """Factory that returns a likelihood creator for CRDM using neural approximation.
 
     Args:
         conditioner: Trained neural network conditioner for density estimation.
+        t_max: Integration horizon of the simulator that produced the data, on
+            the **decision-time** scale. Trials carrying the ``rt = -1.0``
+            censoring sentinel are then scored by
+            ``log S_true(t_max) + log S_false(t_max)`` — see
+            :func:`~confrdm_jax.likelihoods.rdm._censored_eval_rt`. Leave
+            ``None`` only for data that cannot contain the sentinel; the
+            sentinel would otherwise take a ``-1300``-nat penalty. Wired from
+            ``model.test_sampler.t_max`` in ``conf_jax/model/crdm.yaml``.
 
     Returns:
         A function that takes data and returns a likelihood function.
@@ -102,11 +118,16 @@ def create_crdm_likelihood_factory_approx(conditioner):
             tau = jnp.tile(tau, nn_v_c.shape)
             b = jnp.tile(b, nn_v_c.shape)
 
+            # Censored trials are evaluated at the horizon instead of at the
+            # sentinel, so both accumulators yield S(t_max); the substitution
+            # is free because it reuses the evaluation below.
+            rt_eval, is_censored = _censored_eval_rt(rt, t0, t_max)
+
             # Run Neural Network once per trial with correctly routed params
-            nn_log_pdf, nn_log_sf = crdm_log_pdf_sf(rt, nn_v_c, amp, tau, nn_s, b, t0)
+            nn_log_pdf, nn_log_sf = crdm_log_pdf_sf(rt_eval, nn_v_c, amp, tau, nn_s, b, t0)
 
             # Run Analytic Function once per trial
-            ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt, ig_v_c, ig_s, b, t0)
+            ig_log_pdf, ig_log_sf = inv_gauss_log_pdf_sf(rt_eval, ig_v_c, ig_s, b, t0)
 
             # Both branches are already clamped and penalised by
             # _penalize_invalid_rt; clamping again here would erase the
@@ -130,7 +151,11 @@ def create_crdm_likelihood_factory_approx(conditioner):
             dens_choice_1 = log_pdf_true + log_sf_false
             dens_choice_0 = log_pdf_false + log_sf_true
 
-            return jnp.where(choice == 1, dens_choice_1, dens_choice_0)
+            ll = jnp.where(choice == 1, dens_choice_1, dens_choice_0)
+
+            # A censored trial has no winner: both accumulators survive to
+            # t_max, so it contributes both survival factors and no density.
+            return _apply_censoring(is_censored, log_sf_true, log_sf_false, ll)
 
         return likelihood_fun
 
