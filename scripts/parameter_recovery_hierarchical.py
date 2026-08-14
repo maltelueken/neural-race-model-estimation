@@ -66,87 +66,129 @@ DEGENERATE_STEP_SIZE = 1e-4
 # boundary is still steep — the aim is to start off the wall, not next to it.
 T0_INIT_MAX_FRACTION = 0.9
 
+# Rejection budget per particle in `sample_prior_particles_in_support`.  Whole
+# -particle acceptance on the RDM config is 2.3% (all 20 subjects must clear
+# their own cap), so ~44 draws are needed on average and 2000 leaves the
+# probability of exhausting any particle in a 4000-particle run negligible.
+# Exhausting it falls back to clipping, which the caller logs.
+T0_REJECTION_MAX_ATTEMPTS = 2000
 
-def sample_prior_particles(prior, bijector, num_particles, rng_key):
-    """Draw particles from the hierarchical prior in unconstrained flat space.
 
-    Samples from the prior, maps to unconstrained space via bijector.inverse,
-    and ravels each sample to a flat vector.
+def sample_prior_particles_in_support(
+    prior, bijector, num_particles, min_rt, rng_key,
+    max_attempts=T0_REJECTION_MAX_ATTEMPTS,
+):
+    """Draw prior particles restricted to the region where the likelihood exists.
+
+    Samples from the hierarchical prior, maps to unconstrained space via
+    ``bijector.inverse`` and ravels each sample to a flat vector — but only
+    accepts draws in which *every* subject's ``t0`` clears
+    ``T0_INIT_MAX_FRACTION * min_rt``, redrawing the whole particle otherwise.
+
+    **Why the constraint is needed.**  The likelihood is undefined for
+    ``t0 >= min(rt)``, and ``_penalize_invalid_rt`` covers that region with a
+    slope-1e3 penalty whose whole purpose is to shove `t0` back down.  A chain
+    that *starts* there starts on a wall: window adaptation sees divergence
+    after divergence and its only response is to shrink the step size, which
+    does not help because the wall is not a curvature scale.
+    `parameter_recovery.py` has handled this since the single-subject study —
+    see `_overdispersed_init` there, and the support requirement stated in
+    `warmup_multiple_chains`'s docstring — but the hierarchical script drew its
+    starts straight from the prior, where each of the 20 subjects gets an
+    independent `t0` and only one of them has to land high for the chain to be
+    ruined.  On the 500k-step RDM conditioner, in every population that produced
+    a degenerate step size the degenerate chain was exactly the chain with the
+    most violating subjects, and each was also the chain that broke R-hat
+    (1.94 / 2.60 / 2.76, falling to 1.006 / 1.031 / 1.005 once dropped).
+
+    **Why rejection and not a clip.**  The previous version capped `t0` with
+    ``jnp.minimum``, on the reasoning that only the offending subjects would
+    move.  That reasoning does not survive contact with the live prior: `t0` has
+    prior median 0.302 while ``min_rt`` — which is ``t0_true`` plus the fastest
+    decision time — has median 0.325, so a fresh draw exceeds the cap roughly
+    half the time *by construction*, not by bad luck.  Measured on the RDM
+    config at ``test_seed=3500``: 55% of all (particle, subject) draws were
+    capped, 98% of particles had at least one, and the worst subject had 93% of
+    its particles pinned to the single value ``log(0.9 * min_rt)``.  A
+    deterministic cap is a point mass, so that is dispersion destroyed in the
+    one coordinate this function exists to keep dispersed — the same vacuous
+    between-chain variance `warmup_multiple_chains` was written to avoid,
+    reintroduced one layer down.
+
+    **Why the whole particle and not just the offending rows.**  Redrawing only
+    `theta_bt` from its conditional was tried first and exhausts its budget on
+    22% of subject slots: the conditional has SD ~0.07 in log space, so once a
+    particle's population mean ``mu[t0]`` lands above the cap, *every* subject
+    of that particle is stuck and no number of row redraws rescues it.  The
+    constraint is informative about the population block, not just the subject
+    rows, so the population block has to be free to move with it.  Rejecting
+    whole particles yields exactly the prior conditioned on the constraint, at
+    2.3% acceptance on the RDM config.
+
+    The accepted region is where the posterior lives — outside it the
+    likelihood is a penalty, not a density — so restricting the initial cloud
+    to it costs no posterior mass.  It is nonetheless *not* the untruncated
+    prior, which matters because ``adaptive_tempered_smc`` weights increments by
+    ``delta * loglik`` alone and so never corrects the initial distribution.
 
     Args:
         prior: Hierarchical prior instance.
         bijector: TFP JointMap bijector (constrained <-> unconstrained).
         num_particles: Number of particles to draw.
-        rng_key: JAX PRNG key.
-
-    Returns:
-        Array of shape (num_particles, num_flat_params).
-    """
-    keys = jax.random.split(rng_key, num_particles)
-
-    def sample_and_ravel(key):
-        sample = prior.sample(seed=key)
-        unconstrained = bijector.inverse(sample)
-        flat, _ = jfu.ravel_pytree(unconstrained)
-        return flat
-
-    return jax.vmap(sample_and_ravel)(keys)
-
-
-def _clip_t0_into_support(flat_params, unravel_fn, min_rt):
-    """Pull each subject's ``t0`` below its fastest observed RT.
-
-    The likelihood is undefined for ``t0 >= min(rt)``, and
-    ``_penalize_invalid_rt`` covers that region with a slope-1e3 penalty whose
-    whole purpose is to shove `t0` back down.  A chain that *starts* there
-    therefore starts on a wall: window adaptation sees divergence after
-    divergence and its only response is to shrink the step size, which does not
-    help because the wall is not a curvature scale.  `parameter_recovery.py`
-    has handled this since the single-subject study — see `_overdispersed_init`
-    there, and the support requirement stated in `warmup_multiple_chains`'s
-    docstring — but the hierarchical script drew its starts straight from the
-    prior, where each of the 20 subjects gets an independent `t0` and only one
-    of them has to land high for the chain to be ruined.
-
-    That is measurably what happened.  On the 500k-step RDM conditioner, in
-    every population that produced a degenerate step size the degenerate chain
-    was exactly the chain with the most violating subjects (pop 0: 1 of 20,
-    chain 3; pop 1: 7, chain 2; pop 2: 5, chain 2), and each was also the chain
-    that broke R-hat (1.94 / 2.60 / 2.76, falling to 1.006 / 1.031 / 1.005 once
-    dropped).  Population 3, the only one with no violation in any chain, is
-    also the only one that needed no repair and converged at 1.004.
-
-    Clipping rather than overwriting keeps the prior draw's dispersion wherever
-    it was already inside the support, so only the offending subjects move.
-
-    Args:
-        flat_params: Flat unconstrained particles, shape ``(N, D)``.
-        unravel_fn: Inverse of the ravel used to build them.
         min_rt: Per-subject smallest *valid* RT, shape ``(S,)``. Callers must
             exclude the ``-1.0`` censoring sentinel before computing it.
+        rng_key: JAX PRNG key.
+        max_attempts: Redraws before giving up on a particle and clipping it.
 
     Returns:
-        `flat_params` with ``log(t0)`` capped at
-        ``log(T0_INIT_MAX_FRACTION * min_rt)`` subject by subject.
+        ``(particles, num_exhausted)``. `particles` has shape
+        ``(num_particles, num_flat_params)``; `num_exhausted` counts particles
+        that hit `max_attempts` and fell back to clipping, and should be 0 —
+        the caller logs it.
     """
     log_t0_max = jnp.log(T0_INIT_MAX_FRACTION * min_rt)  # (S,)
 
-    def clip_one(flat):
-        params = unravel_fn(flat)
+    def violates(sample):
         # theta_bt is identity-bijected, so its columns are already log(b),
         # log(t0) and the cap applies directly with no round-trip.
-        theta_bt = params["theta_bt"].at[:, -1].set(
-            jnp.minimum(params["theta_bt"][:, -1], log_t0_max),
-        )
-        return jfu.ravel_pytree({**params, "theta_bt": theta_bt})[0]
+        return jnp.any(sample["theta_bt"][:, -1] > log_t0_max)
 
-    return jax.vmap(clip_one)(flat_params)
+    def draw_one(key):
+        first_key, loop_key = jax.random.split(key)
+
+        def cond(carry):
+            i, sample, _ = carry
+            return violates(sample) & (i < max_attempts)
+
+        def body(carry):
+            i, _, k = carry
+            k, draw_key = jax.random.split(k)
+            return i + 1, prior.sample(seed=draw_key), k
+
+        _, sample, _ = jax.lax.while_loop(
+            cond, body, (0, prior.sample(seed=first_key), loop_key),
+        )
+
+        # Last resort for a particle that never cleared the cap; counted so the
+        # caller can tell whether it ever fires.
+        exhausted = violates(sample)
+        theta_bt = sample["theta_bt"].at[:, -1].set(
+            jnp.minimum(sample["theta_bt"][:, -1], log_t0_max),
+        )
+        flat, _ = jfu.ravel_pytree(bijector.inverse({**sample, "theta_bt": theta_bt}))
+        return flat, exhausted
+
+    particles, exhausted = jax.vmap(draw_one)(
+        jax.random.split(rng_key, num_particles),
+    )
+    return particles, jnp.sum(exhausted)
 
 
 def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
     """Map one flat unconstrained particle → (mu, s, log_theta).
 
-    Undoes the flatten-and-unconstrain that ``sample_prior_particles`` applies,
+    Undoes the flatten-and-unconstrain that
+    ``sample_prior_particles_in_support`` applies,
     then rebuilds subject-level log-parameters from the semi-centered
     parameterisation: the leading `num_params_ncp` parameters come from the
     standard-normal offsets ``z`` scaled by the covariance Cholesky, the
@@ -428,13 +470,17 @@ def main(cfg):
         # kernel every chain shares — a single draw with no variability at all.
         #
         # The dispersion has to be support-aware, though: see
-        # `_clip_t0_into_support` for why an unclipped prior draw is what put a
-        # chain on the `t0 >= min(rt)` wall in three of five populations.
-        init_positions = _clip_t0_into_support(
-            sample_prior_particles(prior, bijector, num_chains, init_key),
-            unravel_fn,
-            min_rt,
+        # `sample_prior_particles_in_support` for why a raw prior draw is what
+        # put a chain on the `t0 >= min(rt)` wall in three of five populations.
+        init_positions, init_exhausted = sample_prior_particles_in_support(
+            prior, bijector, num_chains, min_rt, init_key,
         )
+        if int(init_exhausted):
+            logger.warning(
+                "t0 rejection sampling exhausted for %d of %d warm-up starts; "
+                "those fell back to clipping",
+                int(init_exhausted), num_chains,
+            )
 
         # One window adaptation per chain.  target_acceptance_rate=0.8 avoids the
         # degenerate near-zero step sizes that 0.9 produces when the NLE
@@ -513,21 +559,26 @@ def main(cfg):
         # One prior cloud per chain.  Sharing a single cloud left any gap in that
         # one draw invisible to every between-chain comparison.
         #
-        # Clipped for the same reason as the warm-up starts.  It matters less
-        # here — SMC starts at lambda = 0, where the target is the prior and the
-        # likelihood is not consulted — but a particle whose `t0` is above some
-        # subject's fastest RT takes the full 1e3 penalty at the first tempering
-        # increment and is resampled away, so leaving them in just burns
-        # effective particles.
-        initial_particles = jax.vmap(
-            lambda key: _clip_t0_into_support(
-                sample_prior_particles(
-                    prior, bijector, smc_cfg["num_particles"], key,
-                ),
-                unravel_fn,
-                min_rt,
+        # Pulled into the support for the same reason as the warm-up starts. A
+        # particle whose `t0` is above some subject's fastest RT takes the full
+        # 1e3 penalty at the first tempering increment and is resampled away, so
+        # leaving them in just burns effective particles.  Redrawing rather than
+        # clipping matters more here than it does for the starts: at 55%
+        # violation the clip stacked most of the cloud's `t0` mass on one point
+        # per subject, and `num_mcmc_steps` mutation steps then have to
+        # rediversify a coordinate that began with almost no spread.
+        initial_particles, cloud_exhausted = jax.vmap(
+            lambda key: sample_prior_particles_in_support(
+                prior, bijector, smc_cfg["num_particles"], min_rt, key,
             ),
         )(jax.random.split(cloud_key, num_chains))
+        if int(jnp.sum(cloud_exhausted)):
+            logger.warning(
+                "t0 rejection sampling exhausted for %d of %d initial-cloud "
+                "particles; those fell back to clipping",
+                int(jnp.sum(cloud_exhausted)),
+                num_chains * smc_cfg["num_particles"],
+            )
 
         def run_chain(key, step_size, inverse_mass_matrix, particles):
             """One SMC run with this chain's own tuning and its own particles."""
