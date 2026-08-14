@@ -64,14 +64,78 @@ DEGENERATE_STEP_SIZE = 1e-4
 # Highest fraction of a subject's fastest RT that `t0` may take at
 # initialisation.  Below 1.0 by a margin because the density just inside the
 # boundary is still steep — the aim is to start off the wall, not next to it.
-T0_INIT_MAX_FRACTION = 0.9
+#
+# 0.97 rather than the 0.9 this held originally.  `min_rt` is `t0_true` plus
+# the fastest decision time, and that gap is small: over 40 RDM populations the
+# median `t0_true / min_rt` is 0.779 and the 99th percentile 0.931.  A 10%
+# margin therefore excludes the *true* `t0` from the region the cloud starts
+# in, which is a different and worse failure than starting on the wall — the
+# target is not truncated, so only mutation can carry particles back up to the
+# truth, and at `num_mcmc_steps = 1` that is exactly what may not happen.
+# Measured share of subjects whose true `t0` the cap excludes:
+#
+#     cap   0.90    0.93    0.95    0.97    0.99
+#     subj  4.50%   1.25%   0.12%   0.00%   0.00%
+#     pops   30%      8%      2%      0%      0%
+#
+# 0.97 is the first value that excludes nothing while still holding particles
+# 3% clear of the boundary.
+T0_INIT_MAX_FRACTION = 0.97
 
 # Rejection budget per particle in `sample_prior_particles_in_support`.  Whole
-# -particle acceptance on the RDM config is 2.3% (all 20 subjects must clear
-# their own cap), so ~44 draws are needed on average and 2000 leaves the
-# probability of exhausting any particle in a 4000-particle run negligible.
-# Exhausting it falls back to clipping, which the caller logs.
+# -particle acceptance on the RDM config is 9.5% at the cap above (all 20
+# subjects must clear their own), so ~11 draws are needed on average and 2000
+# leaves the probability of exhausting any particle in a 4000-particle run
+# negligible.  Exhausting it falls back to clipping, which the caller logs.
 T0_REJECTION_MAX_ATTEMPTS = 2000
+
+
+def sample_prior_particles(prior, bijector, num_particles, rng_key):
+    """Draw unconstrained flat particles from the prior, with no support restriction.
+
+    This is the **model's** prior — the distribution the data are generated
+    from, and the one ``log_prior_fn`` evaluates during sampling.  Nothing in
+    the sampler starts here (see :func:`sample_prior_particles_in_support` for
+    what does); it exists so the ``prior`` group of the stored ``.nc`` is the
+    real prior rather than the initialisation cloud.
+
+    That distinction is invisible for most parameters and decisive for ``t0``.
+    Measured over 20 000 draws on the RDM config, the support-restricted cloud's
+    SD divided by this one's:
+
+    ===================  =====
+    ``mu[v_intercept]``  1.012
+    ``mu[v_slope]``      1.004
+    ``mu[s_true]``       0.999
+    ``mu[b]``            0.998
+    ``mu[t0]``           0.529
+    ===================  =====
+
+    Posterior contraction is normally reported as ``1 - (sd_post/sd_prior)^2``,
+    which squares that discrepancy.  A posterior that has genuinely contracted
+    to 0.75 would be reported as **0.107** against the restricted cloud — an
+    almost total loss of the signal.  At the ``T0_INIT_MAX_FRACTION = 0.9`` this
+    script used originally the ratio was 0.468 and the same figure came out at
+    ``-0.142``, i.e. the posterior appeared *wider than its prior*; raising the
+    cap to 0.97 softened that without removing the reason to keep the two
+    clouds apart.
+
+    Simulation-based calibration is unaffected either way: it ranks the true
+    value (stored in ``constant_data``) among the posterior draws and never
+    consults this group.
+
+    Args:
+        prior: Hierarchical prior instance.
+        bijector: TFP JointMap bijector (constrained <-> unconstrained).
+        num_particles: Number of particles to draw.
+        rng_key: JAX PRNG key.
+
+    Returns:
+        Array of shape ``(num_particles, num_flat_params)``.
+    """
+    return jax.vmap(
+        lambda key: jfu.ravel_pytree(bijector.inverse(prior.sample(seed=key)))[0],
+    )(jax.random.split(rng_key, num_particles))
 
 
 def sample_prior_particles_in_support(
@@ -105,15 +169,17 @@ def sample_prior_particles_in_support(
     ``jnp.minimum``, on the reasoning that only the offending subjects would
     move.  That reasoning does not survive contact with the live prior: `t0` has
     prior median 0.302 while ``min_rt`` — which is ``t0_true`` plus the fastest
-    decision time — has median 0.325, so a fresh draw exceeds the cap roughly
-    half the time *by construction*, not by bad luck.  Measured on the RDM
-    config at ``test_seed=3500``: 55% of all (particle, subject) draws were
-    capped, 98% of particles had at least one, and the worst subject had 93% of
-    its particles pinned to the single value ``log(0.9 * min_rt)``.  A
-    deterministic cap is a point mass, so that is dispersion destroyed in the
-    one coordinate this function exists to keep dispersed — the same vacuous
-    between-chain variance `warmup_multiple_chains` was written to avoid,
-    reintroduced one layer down.
+    decision time — has median 0.325, so a fresh draw exceeds the cap often
+    enough to matter *by construction*, not by bad luck.  Measured on the RDM
+    config at ``test_seed=3500``, at the ``T0_INIT_MAX_FRACTION = 0.9`` in force
+    at the time: 55% of all (particle, subject) draws were capped, 98% of
+    particles had at least one, and the worst subject had 93% of its particles
+    pinned to the single value ``log(0.9 * min_rt)``.  A deterministic cap is a
+    point mass, so that is dispersion destroyed in the one coordinate this
+    function exists to keep dispersed — the same vacuous between-chain variance
+    `warmup_multiple_chains` was written to avoid, reintroduced one layer down.
+    The cap has since been raised to 0.97, which reduces how often it binds but
+    does not change the argument: a clip is still a point mass wherever it does.
 
     **Why the whole particle and not just the offending rows.**  Redrawing only
     `theta_bt` from its conditional was tried first and exhausts its budget on
@@ -123,13 +189,21 @@ def sample_prior_particles_in_support(
     constraint is informative about the population block, not just the subject
     rows, so the population block has to be free to move with it.  Rejecting
     whole particles yields exactly the prior conditioned on the constraint, at
-    2.3% acceptance on the RDM config.
+    9.5% acceptance on the RDM config.
 
     The accepted region is where the posterior lives — outside it the
     likelihood is a penalty, not a density — so restricting the initial cloud
     to it costs no posterior mass.  It is nonetheless *not* the untruncated
-    prior, which matters because ``adaptive_tempered_smc`` weights increments by
-    ``delta * loglik`` alone and so never corrects the initial distribution.
+    prior, which matters twice.  ``adaptive_tempered_smc`` weights increments by
+    ``delta * loglik`` alone and so never corrects the initial distribution:
+    only mutation can. And the constraint is what forces
+    ``T0_INIT_MAX_FRACTION`` to stay near 1 — at 0.9 the cap excluded the true
+    ``t0`` for 4.5% of subjects, which mutation would then have to undo.
+
+    This truncated cloud is therefore an initialisation artefact, not the
+    model's prior, and is stored under its own ``smc_initial_particles`` group
+    rather than under ``prior``.  See :func:`sample_prior_particles` for why the
+    distinction matters to anything measuring posterior contraction.
 
     Args:
         prior: Hierarchical prior instance.
@@ -213,6 +287,40 @@ def _reconstruct_particle(flat_particle, unravel_fn, bijector, num_params_ncp):
         [theta_ncp, params['theta_bt']], axis=-1,
     )                                                                # (S, P)
     return params['mu'], params['s'], log_theta
+
+
+def _particle_dataset(flat_particles, reconstruct, num_subjects, param_names):
+    """Reconstruct a flat particle cloud into a ``(draw, ...)`` Dataset.
+
+    Shared by the ``prior`` and ``smc_initial_particles`` groups, which differ
+    only in which cloud they are given. Scales match the ``posterior`` group's
+    convention: ``mu`` and the subject-level parameters are exponentiated to
+    the natural scale, ``sigma`` stays in log space because it is a standard
+    deviation *of* log-parameters.
+
+    Args:
+        flat_particles: ``(N, D)`` unconstrained flat particles.
+        reconstruct: Maps one flat particle to ``(mu, s, log_theta)``.
+        num_subjects: Number of subjects S.
+        param_names: List of parameter names, length P.
+
+    Returns:
+        ``xr.Dataset`` with dims ``draw``, ``param`` and ``subject``.
+    """
+    mu, s, log_theta = jax.vmap(reconstruct)(flat_particles)
+    return xr.Dataset(
+        {
+            "mu":    (["draw", "param"], np.exp(np.array(mu))),
+            "sigma": (["draw", "param"], np.array(s)),
+            **{name: (["draw", "subject"], np.exp(np.array(log_theta[..., i])))
+               for i, name in enumerate(param_names)},
+        },
+        coords={
+            "draw": np.arange(flat_particles.shape[0]),
+            "subject": np.arange(num_subjects),
+            "param": param_names,
+        },
+    )
 
 
 def _build_population_datatree(
@@ -651,7 +759,7 @@ def main(cfg):
     for pop_idx in range(num_populations):
         logger.info("Population %d / %d", pop_idx + 1, num_populations)
 
-        test_key, data_key, sampling_key = jax.random.split(test_key, 3)
+        test_key, data_key, sampling_key, prior_key = jax.random.split(test_key, 4)
 
         # Simulate hierarchical data using LKJ-MVN prior
         data, context = sampler(
@@ -688,23 +796,24 @@ def main(cfg):
         )
         logger.info("SMC converged in %s iterations", n_iter)
 
-        # Each chain now has its own cloud, shape (chains, particles, params).
-        # The prior group pools them: they are all draws from the same prior.
-        pooled_particles = initial_particles.reshape(-1, initial_particles.shape[-1])
-        prior_mu, prior_s, prior_log_theta = jax.vmap(reconstruct)(pooled_particles)
-        subjects = np.arange(num_subjects)
-        prior_ds = xr.Dataset(
-            {
-                "mu":    (["draw", "param"], np.exp(np.array(prior_mu))),
-                "sigma": (["draw", "param"], np.array(prior_s)),
-                **{name: (["draw", "subject"], np.exp(np.array(prior_log_theta[..., i])))
-                   for i, name in enumerate(param_names)},
-            },
-            coords={
-                "draw": np.arange(pooled_particles.shape[0]),
-                "subject": subjects,
-                "param": param_names,
-            },
+        # The `prior` group is the *model's* prior — untruncated, matching what
+        # generated the data and what `log_prior_fn` evaluates.  It is drawn
+        # afresh rather than taken from the SMC starting cloud, which is
+        # support-restricted and would halve the apparent prior SD of `t0`; see
+        # `sample_prior_particles`.  Same size as the pooled cloud so the two
+        # are directly comparable.
+        num_prior_draws = smc_cfg["num_chains"] * smc_cfg["num_particles"]
+        prior_ds = _particle_dataset(
+            sample_prior_particles(prior, bijector, num_prior_draws, prior_key),
+            reconstruct, num_subjects, param_names,
+        )
+
+        # The starting cloud is kept too, under its own name: it is a genuine
+        # diagnostic of what SMC began from, but it is not the prior.  Each
+        # chain has its own, shape (chains, particles, params); pooled here.
+        initial_ds = _particle_dataset(
+            initial_particles.reshape(-1, initial_particles.shape[-1]),
+            reconstruct, num_subjects, param_names,
         )
 
         dt = _build_population_datatree(
@@ -722,6 +831,7 @@ def main(cfg):
             pop_idx=pop_idx,
         )
         dt["prior"] = prior_ds
+        dt["smc_initial_particles"] = initial_ds
         approx_path = f"hierarchical_recovery_pop{pop_idx}_approx.nc"
         logger.info("Saving approx results to %s", approx_path)
         dt.to_netcdf(approx_path)
@@ -732,8 +842,10 @@ def main(cfg):
             sampling_key, ref_key = jax.random.split(sampling_key)
 
             ref_likelihood = instantiate(model_hier_cfg["likelihood_factory_ref"])
-            particles_ref, weights_ref, n_iter_ref, _ = recover_population(
-                ref_key, data, mask, ref_likelihood, unravel_fn, min_rt,
+            particles_ref, weights_ref, n_iter_ref, initial_particles_ref = (
+                recover_population(
+                    ref_key, data, mask, ref_likelihood, unravel_fn, min_rt,
+                )
             )
             logger.info("Ref SMC converged in %s iterations", n_iter_ref)
 
@@ -751,7 +863,13 @@ def main(cfg):
                 param_names=param_names,
                 pop_idx=pop_idx,
             )
-            dt_ref["prior"] = xr.DataTree(dataset=prior_ds)
+            # Same untruncated prior — it does not depend on which likelihood
+            # was used — but the reference run drew its own starting cloud.
+            dt_ref["prior"] = prior_ds
+            dt_ref["smc_initial_particles"] = _particle_dataset(
+                initial_particles_ref.reshape(-1, initial_particles_ref.shape[-1]),
+                reconstruct, num_subjects, param_names,
+            )
             ref_path = f"hierarchical_recovery_pop{pop_idx}_ref.nc"
             logger.info("Saving ref results to %s", ref_path)
             dt_ref.to_netcdf(ref_path)
