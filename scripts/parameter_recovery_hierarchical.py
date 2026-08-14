@@ -61,33 +61,19 @@ _DATA_COL_NAMES = ["rt", "choice", "condition"]
 # of magnitude out and the chain would not move at all during mutation.
 DEGENERATE_STEP_SIZE = 1e-4
 
-# Highest fraction of a subject's fastest RT that `t0` may take at
-# initialisation.  Below 1.0 by a margin because the density just inside the
-# boundary is still steep — the aim is to start off the wall, not next to it.
-#
-# 0.97 rather than the 0.9 this held originally.  `min_rt` is `t0_true` plus
-# the fastest decision time, and that gap is small: over 40 RDM populations the
-# median `t0_true / min_rt` is 0.779 and the 99th percentile 0.931.  A 10%
-# margin therefore excludes the *true* `t0` from the region the cloud starts
-# in, which is a different and worse failure than starting on the wall — the
-# target is not truncated, so only mutation can carry particles back up to the
-# truth, and at `num_mcmc_steps = 1` that is exactly what may not happen.
-# Measured share of subjects whose true `t0` the cap excludes:
-#
-#     cap   0.90    0.93    0.95    0.97    0.99
-#     subj  4.50%   1.25%   0.12%   0.00%   0.00%
-#     pops   30%      8%      2%      0%      0%
-#
-# 0.97 is the first value that excludes nothing while still holding particles
-# 3% clear of the boundary.
-T0_INIT_MAX_FRACTION = 0.97
-
-# Rejection budget per particle in `sample_prior_particles_in_support`.  Whole
-# -particle acceptance on the RDM config is 9.5% at the cap above (all 20
-# subjects must clear their own), so ~11 draws are needed on average and 2000
-# leaves the probability of exhausting any particle in a 4000-particle run
-# negligible.  Exhausting it falls back to clipping, which the caller logs.
-T0_REJECTION_MAX_ATTEMPTS = 2000
+# The `t0` cap and rejection budget come from the `init` block of
+# `conf_jax/config.yaml`, which carries the measurements behind both values and
+# is where `parameter_recovery.py` reads them from too — the two scripts impose
+# the same constraint and must not drift apart on it.  For this script the cap
+# was raised to 0.97 from 0.9: `min_rt` is `t0_true` plus the fastest decision
+# time and that gap is small, with a median `t0_true / min_rt` of 0.779 over 40
+# RDM populations, so a 10% margin excluded the *true* `t0` for 4.5% of subjects
+# and 30% of populations.  That is a different and worse failure than starting
+# near the boundary: the target is not truncated, and at `num_mcmc_steps = 1`
+# only mutation can carry particles back up to the truth.  Whole-particle
+# acceptance at 0.97 is 9.5% — all 20 subjects must clear their own cap — so ~11
+# draws per particle, and a budget of 2000 makes exhausting any particle in a
+# 4000-particle run negligible.
 
 
 def sample_prior_particles(prior, bijector, num_particles, rng_key):
@@ -114,7 +100,7 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
     Posterior contraction is normally reported as ``1 - (sd_post/sd_prior)^2``,
     which squares that discrepancy.  A posterior that has genuinely contracted
     to 0.75 would be reported as **0.107** against the restricted cloud — an
-    almost total loss of the signal.  At the ``T0_INIT_MAX_FRACTION = 0.9`` this
+    almost total loss of the signal.  At the ``t0_max_fraction = 0.9`` this
     script used originally the ratio was 0.468 and the same figure came out at
     ``-0.142``, i.e. the posterior appeared *wider than its prior*; raising the
     cap to 0.97 softened that without removing the reason to keep the two
@@ -140,14 +126,14 @@ def sample_prior_particles(prior, bijector, num_particles, rng_key):
 
 def sample_prior_particles_in_support(
     prior, bijector, num_particles, min_rt, rng_key,
-    max_attempts=T0_REJECTION_MAX_ATTEMPTS,
+    *, max_t0_fraction, max_attempts,
 ):
     """Draw prior particles restricted to the region where the likelihood exists.
 
     Samples from the hierarchical prior, maps to unconstrained space via
     ``bijector.inverse`` and ravels each sample to a flat vector — but only
     accepts draws in which *every* subject's ``t0`` clears
-    ``T0_INIT_MAX_FRACTION * min_rt``, redrawing the whole particle otherwise.
+    ``max_t0_fraction * min_rt``, redrawing the whole particle otherwise.
 
     **Why the constraint is needed.**  The likelihood is undefined for
     ``t0 >= min(rt)``, and ``_penalize_invalid_rt`` covers that region with a
@@ -156,8 +142,8 @@ def sample_prior_particles_in_support(
     after divergence and its only response is to shrink the step size, which
     does not help because the wall is not a curvature scale.
     `parameter_recovery.py` has handled this since the single-subject study —
-    see `_overdispersed_init` there, and the support requirement stated in
-    `warmup_multiple_chains`'s docstring — but the hierarchical script drew its
+    see `_sample_init_positions_in_support` there, and the support requirement
+    stated in `warmup_multiple_chains`'s docstring — but this script drew its
     starts straight from the prior, where each of the 20 subjects gets an
     independent `t0` and only one of them has to land high for the chain to be
     ruined.  On the 500k-step RDM conditioner, in every population that produced
@@ -171,7 +157,7 @@ def sample_prior_particles_in_support(
     prior median 0.302 while ``min_rt`` — which is ``t0_true`` plus the fastest
     decision time — has median 0.325, so a fresh draw exceeds the cap often
     enough to matter *by construction*, not by bad luck.  Measured on the RDM
-    config at ``test_seed=3500``, at the ``T0_INIT_MAX_FRACTION = 0.9`` in force
+    config at ``test_seed=3500``, at the ``t0_max_fraction = 0.9`` in force
     at the time: 55% of all (particle, subject) draws were capped, 98% of
     particles had at least one, and the worst subject had 93% of its particles
     pinned to the single value ``log(0.9 * min_rt)``.  A deterministic cap is a
@@ -197,7 +183,7 @@ def sample_prior_particles_in_support(
     prior, which matters twice.  ``adaptive_tempered_smc`` weights increments by
     ``delta * loglik`` alone and so never corrects the initial distribution:
     only mutation can. And the constraint is what forces
-    ``T0_INIT_MAX_FRACTION`` to stay near 1 — at 0.9 the cap excluded the true
+    ``max_t0_fraction`` to stay near 1 — at 0.9 the cap excluded the true
     ``t0`` for 4.5% of subjects, which mutation would then have to undo.
 
     This truncated cloud is therefore an initialisation artefact, not the
@@ -212,7 +198,10 @@ def sample_prior_particles_in_support(
         min_rt: Per-subject smallest *valid* RT, shape ``(S,)``. Callers must
             exclude the ``-1.0`` censoring sentinel before computing it.
         rng_key: JAX PRNG key.
-        max_attempts: Redraws before giving up on a particle and clipping it.
+        max_t0_fraction: Highest fraction of a subject's `min_rt` that an
+            accepted `t0` may take; ``init.t0_max_fraction``.
+        max_attempts: Redraws before giving up on a particle and clipping it;
+            ``init.t0_rejection_max_attempts``.
 
     Returns:
         ``(particles, num_exhausted)``. `particles` has shape
@@ -220,7 +209,7 @@ def sample_prior_particles_in_support(
         that hit `max_attempts` and fell back to clipping, and should be 0 —
         the caller logs it.
     """
-    log_t0_max = jnp.log(T0_INIT_MAX_FRACTION * min_rt)  # (S,)
+    log_t0_max = jnp.log(max_t0_fraction * min_rt)  # (S,)
 
     def violates(sample):
         # theta_bt is identity-bijected, so its columns are already log(b),
@@ -511,6 +500,7 @@ def main(cfg):
     likelihood_factory_approx = likelihood_factory_fn(conditioner)
 
     smc_cfg = hier_cfg["smc"]
+    init_cfg = cfg["init"]
 
     bijector = tfb.JointMap({
         "s": tfb.Exp(),                       # InverseGamma -> Positive
@@ -582,6 +572,8 @@ def main(cfg):
         # put a chain on the `t0 >= min(rt)` wall in three of five populations.
         init_positions, init_exhausted = sample_prior_particles_in_support(
             prior, bijector, num_chains, min_rt, init_key,
+            max_t0_fraction=init_cfg["t0_max_fraction"],
+            max_attempts=init_cfg["t0_rejection_max_attempts"],
         )
         if int(init_exhausted):
             logger.warning(
@@ -678,6 +670,8 @@ def main(cfg):
         initial_particles, cloud_exhausted = jax.vmap(
             lambda key: sample_prior_particles_in_support(
                 prior, bijector, smc_cfg["num_particles"], min_rt, key,
+                max_t0_fraction=init_cfg["t0_max_fraction"],
+                max_attempts=init_cfg["t0_rejection_max_attempts"],
             ),
         )(jax.random.split(cloud_key, num_chains))
         if int(jnp.sum(cloud_exhausted)):

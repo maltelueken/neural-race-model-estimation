@@ -46,21 +46,40 @@ jax.config.update('jax_enable_x64', True)
 _DATA_COL_NAMES = ["rt", "choice", "condition"]
 
 
-def _overdispersed_init(rng_key, prior, num_chains, min_rt):
-    """Draw one starting position per chain, dispersed but inside the support.
+def _sample_init_positions_in_support(
+    rng_key, prior, num_chains, min_rt, *, max_t0_fraction, max_attempts,
+):
+    """Draw one starting position per chain from the prior restricted to the support.
 
-    Prior draws supply the dispersion for every parameter except `t0`, which
-    cannot be treated the same way: the likelihood is undefined for
-    `t0 >= min(rt)` and the penalty branch there has a gradient of order 1e3,
-    so a chain started above the boundary diverges on every step and never
-    recovers. Measured on the RDM at n = 500: perturbing all five parameters
-    alike by ~0.35 in log space gives 1001/1000 divergences, max R-hat 1.53
-    and min ESS 7. Dispersion has to be support-aware.
+    Prior draws supply the dispersion, but `t0` cannot simply be taken as
+    drawn: the likelihood is undefined for `t0 >= min(rt)` and the penalty
+    branch there has a gradient of order 1e3, so a chain started above the
+    boundary diverges on every step and never recovers. Measured on the RDM at
+    n = 500: perturbing all five parameters alike by ~0.35 in log space gives
+    1001/1000 divergences, max R-hat 1.53 and min ESS 7. Dispersion has to be
+    support-aware.
 
-    `t0` is therefore spread deterministically over fractions of `min_rt` — the
-    interval it is actually confined to — rather than being given Gaussian
-    noise. It is assumed to be the **last** parameter, which holds for both
-    recovery priors: RDM is ``[v_intercept, v_slope, s_true, b, t0]`` and CRDM
+    Whole draws are therefore rejected and redrawn until `t0` clears
+    ``max_t0_fraction * min_rt``, which is the same rule
+    `sample_prior_particles_in_support` applies in
+    ``parameter_recovery_hierarchical.py`` — both read the fraction and the
+    budget from the ``init`` block of ``conf_jax/config.yaml``, which is also
+    where the measurements behind the values are recorded. See that other
+    docstring for why rejection and not a clip. Rejecting the whole draw rather
+    than resampling `t0` alone keeps the starts exactly
+    prior-conditional-on-support, which matters here only for tidiness — the
+    single-subject prior is independent across parameters, so nothing else
+    moves — but keeps the two scripts saying the same thing.
+
+    This replaced a deterministic fan, ``t0 = linspace(0.2, 0.8) * min_rt``.
+    That was in-support by construction and dispersed, but it discarded the
+    prior's `t0` for a point mass per chain and its ceiling was far too low:
+    the true `t0` sits at a median 0.807 of `min_rt` on the RDM and 0.926 on
+    the CRDM, so ``0.8`` put every chain below the truth for 52% (RDM) and 88%
+    (CRDM) of data sets and left window adaptation to walk them all back up.
+
+    `t0` is assumed to be the **last** parameter, which holds for both recovery
+    priors: RDM is ``[v_intercept, v_slope, s_true, b, t0]`` and CRDM
     ``[v_c_intercept, v_c_slope, amp, tau, s_true, b, t0]``. That ordering is
     positional and unenforced.
 
@@ -70,13 +89,64 @@ def _overdispersed_init(rng_key, prior, num_chains, min_rt):
         num_chains: Number of starting positions to produce.
         min_rt: Smallest *valid* observed RT. Callers must exclude the
             ``-1.0`` censoring sentinel before computing it.
+        max_t0_fraction: Highest fraction of `min_rt` an accepted `t0` may take;
+            ``init.t0_max_fraction``.
+        max_attempts: Redraws before giving up on a chain and clipping it;
+            ``init.t0_rejection_max_attempts``.
 
     Returns:
-        Log-space starting positions, shape ``(num_chains, num_params)``.
+        ``(positions, num_exhausted)``. `positions` holds log-space starting
+        positions of shape ``(num_chains, num_params)``; `num_exhausted` counts
+        chains that hit `max_attempts` and fell back to clipping, and should be
+        0 — the caller logs it.
     """
-    draws = jnp.stack(prior.sample(seed=rng_key, sample_shape=(num_chains,)), axis=1)
-    t0_fraction = jnp.linspace(0.2, 0.8, num_chains)
-    return jnp.log(draws.at[:, -1].set(t0_fraction * min_rt))
+    t0_max = max_t0_fraction * min_rt
+
+    def draw(key):
+        return jnp.stack(prior.sample(seed=key))
+
+    def draw_one(key):
+        first_key, loop_key = jax.random.split(key)
+
+        def cond(carry):
+            i, sample, _ = carry
+            return (sample[-1] > t0_max) & (i < max_attempts)
+
+        def body(carry):
+            i, _, k = carry
+            k, draw_key = jax.random.split(k)
+            return i + 1, draw(draw_key), k
+
+        _, sample, _ = jax.lax.while_loop(
+            cond, body, (0, draw(first_key), loop_key),
+        )
+
+        # Last resort for a chain that never cleared the cap; counted so the
+        # caller can tell whether it ever fires.
+        exhausted = sample[-1] > t0_max
+        sample = sample.at[-1].set(jnp.minimum(sample[-1], t0_max))
+        return jnp.log(sample), exhausted
+
+    positions, exhausted = jax.vmap(draw_one)(jax.random.split(rng_key, num_chains))
+    return positions, jnp.sum(exhausted)
+
+
+def _log_init_exhaustion(label, exhausted, num_datasets, cfg):
+    """Warn if any chain's `t0` rejection budget ran out and it was clipped.
+
+    Args:
+        label: Which fit produced the counts, for the message.
+        exhausted: Per-data-set counts from `_sample_init_positions_in_support`.
+        num_datasets: Number of data sets fit, for the denominator.
+        cfg: Hydra config, read for the chain count.
+    """
+    total = int(jnp.sum(exhausted))
+    if total:
+        logger.warning(
+            "%s: t0 rejection sampling exhausted for %d of %d chain starts; "
+            "those fell back to clipping",
+            label, total, num_datasets * cfg["mcmc"]["num_chains"],
+        )
 
 
 def _build_recovery_datatree(samples, data, true_params, prior_ds, param_names):
@@ -218,9 +288,11 @@ def main(cfg):
                 log-likelihood function of log-parameters.
 
         Returns:
-            Draws of shape ``(num_draws, num_chains, num_params)``,
-            exponentiated back to the natural scale. Nothing is discarded as
-            burn-in — warm-up already ran separately.
+            ``(draws, num_exhausted)``. `draws` has shape
+            ``(num_draws, num_chains, num_params)``, exponentiated back to the
+            natural scale; nothing is discarded as burn-in, warm-up already ran
+            separately. `num_exhausted` is the initialisation rejection budget
+            overrun, which the caller sums and logs.
         """
         # Censored trials carry the sentinel rt = -1.0.  Taking the raw minimum
         # would initialise t0 negative and `jnp.log` it to NaN, silently
@@ -237,7 +309,14 @@ def main(cfg):
 
         sampling_key, warmup_key, init_key = jax.random.split(sampling_key, 3)
 
-        init_positions = _overdispersed_init(init_key, prior, num_chains, min_rt)
+        init_positions, num_exhausted = _sample_init_positions_in_support(
+            init_key,
+            prior,
+            num_chains,
+            min_rt,
+            max_t0_fraction=cfg["init"]["t0_max_fraction"],
+            max_attempts=cfg["init"]["t0_rejection_max_attempts"],
+        )
 
         # One window adaptation per chain, so the starts are dispersed *and*
         # converged and R-hat measures between-chain disagreement rather than
@@ -269,18 +348,19 @@ def main(cfg):
             kernel_params,
         )
 
-        return jnp.exp(positions)
+        return jnp.exp(positions), num_exhausted
 
     # Approximate recovery
     sampling_key_approx, sampling_key_ref = jax.random.split(sampling_key, 2)
     sampling_keys_approx = jax.random.split(sampling_key_approx, test_data.shape[0])
 
-    samples_approx = jax.vmap(recover_dataset, in_axes=(0, 0, None))(
+    samples_approx, exhausted_approx = jax.vmap(recover_dataset, in_axes=(0, 0, None))(
         sampling_keys_approx, test_data, likelihood_factory_approx
     )
     samples_approx.block_until_ready()
 
     logger.info("Approx samples shape: %s", samples_approx.shape)
+    _log_init_exhaustion("approx", exhausted_approx, test_data.shape[0], cfg)
 
     dt = _build_recovery_datatree(
         samples=np.array(samples_approx),
@@ -298,11 +378,12 @@ def main(cfg):
         likelihood_factory_ref = instantiate(cfg["model"]["likelihood_factory_ref"])
         sampling_keys_ref = jax.random.split(sampling_key_ref, test_data.shape[0])
 
-        samples_ref = jax.vmap(recover_dataset, in_axes=(0, 0, None))(
+        samples_ref, exhausted_ref = jax.vmap(recover_dataset, in_axes=(0, 0, None))(
             sampling_keys_ref, test_data, likelihood_factory_ref
         )
         samples_ref.block_until_ready()
         logger.info("Ref samples shape: %s", samples_ref.shape)
+        _log_init_exhaustion("ref", exhausted_ref, test_data.shape[0], cfg)
 
         dt_ref = _build_recovery_datatree(
             samples=np.array(samples_ref),

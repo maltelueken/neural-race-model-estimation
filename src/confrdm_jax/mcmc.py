@@ -1,9 +1,10 @@
-"""BlackJAX NUTS driving helpers for the single-subject recovery path.
+"""BlackJAX NUTS driving helpers for the recovery scripts.
 
 Two pieces: window adaptation (:func:`warmup`, :func:`warmup_multiple_chains`)
 and the sampling loop (:func:`inference_loop_multiple_chains`).  They are split
 so that chains can be adapted *independently* and then advanced in lockstep,
-each carrying its own step size and mass matrix.
+each carrying its own step size and mass matrix.  ``warmup_multiple_chains`` is
+used by the hierarchical SMC path too, for the mutation kernel's tuning.
 
 Everything here operates on unconstrained positions.  The models parameterise
 in log space, so the log-density handed in is expected to include the
@@ -103,7 +104,8 @@ def warmup_multiple_chains(
         logdensity_fun: shared unnormalised log posterior.
         init_positions: pytree of starting positions with a leading axis of
             length `num_chains`. These should be genuinely dispersed and must
-            all lie inside the support — see `_overdispersed_init` in
+            all lie inside the support — see the `init` block of
+            `conf_jax/config.yaml` and `_sample_init_positions_in_support` in
             `scripts/parameter_recovery.py` for the `t0 < min(rt)` constraint.
         num_steps: adaptation steps per chain.
         rng_key: PRNG key; split once per chain.

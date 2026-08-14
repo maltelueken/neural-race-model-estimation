@@ -42,6 +42,40 @@ test_num_datasets: 100
 
 learning_rate: 5e-3
 
+# Starting-position support constraint, applied by both recovery scripts.
+# The likelihood is undefined for t0 >= min(rt), and the penalty branch that
+# covers that region has a gradient of order 1e3, so a sampler started above the
+# boundary diverges on every step and never recovers. Both scripts therefore
+# draw their starts from the prior *conditioned* on t0 < t0_max_fraction *
+# min_rt, by rejection rather than by clipping — a clip is a point mass, and it
+# lands in the one coordinate the dispersion exists to spread.
+init:
+  # Below 1.0 so starts sit off the wall, but only just: min_rt is t0_true plus
+  # the fastest decision time, so a low cap excludes the *true* t0 from the
+  # region the sampler starts in, which is a worse failure than starting near
+  # the boundary. Share of units whose true t0 the cap excludes:
+  #
+  #     cap                        0.90    0.95    0.97    0.99
+  #     hierarchical subjects     4.50%   0.12%   0.00%   0.00%
+  #     hierarchical populations     30%      2%      0%      0%
+  #     single-subject RDM       22.60%   4.40%   1.40%   0.20%
+  #     single-subject CRDM      67.50%  35.00%  12.50%   2.50%
+  #
+  # 0.97 is the first value that excludes nothing hierarchically, which is where
+  # exclusion costs most: tempered SMC never corrects its initial cloud by
+  # weighting and has only mutation, at num_mcmc_steps = 1, to walk t0 back up.
+  # The single-subject path runs num_warmup window-adaptation steps per chain
+  # and can absorb the residual — worst on the CRDM, whose true t0 sits at a
+  # median 0.926 of min_rt (RDM 0.807, hierarchical 0.779).
+  t0_max_fraction: 0.97
+
+  # Rejection budget per starting position. Acceptance is 9.5% for a whole
+  # hierarchical particle — all 20 subjects have to clear their own cap — and
+  # 61% (RDM) / 52% (CRDM) for a single-subject draw, though the worst
+  # individual data set measured sits at 2.5%. Exhausting the budget falls back
+  # to clipping, which both scripts count and log.
+  t0_rejection_max_attempts: 2000
+
 mcmc:
   num_warmup: 2000
   num_sampling: 1000
