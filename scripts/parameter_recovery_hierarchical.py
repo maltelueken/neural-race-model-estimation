@@ -313,6 +313,102 @@ def _particle_dataset(flat_particles, reconstruct, num_subjects, param_names):
     )
 
 
+def _flatten_diagnostic(ds):
+    """Flatten a per-variable diagnostic Dataset into ``(value, label)`` pairs.
+
+    ``az.rhat`` and ``az.ess`` return one value per variable *per coordinate* —
+    `mu` and `sigma` carry a ``param`` axis, the subject-level parameters carry
+    a ``subject`` axis — so the worst entry has to be found across a ragged
+    collection rather than a single array. Labels name where the value came
+    from, which is the part worth logging: "3.74 at t0[17]" localises the
+    failure, "3.74" does not.
+
+    Non-finite entries are dropped. R-hat is NaN for a single chain, so a
+    one-chain run yields an empty list rather than a spurious extreme.
+
+    Args:
+        ds: Diagnostic Dataset, one variable per posterior variable.
+
+    Returns:
+        List of ``(value, label)`` pairs, finite entries only.
+    """
+    pairs = []
+    for name, da in ds.items():
+        if not da.dims:
+            pairs.append((float(da.values), name))
+            continue
+        stacked = da.stack(entry=da.dims)
+        for coord, value in zip(
+            stacked["entry"].values, np.asarray(stacked.values), strict=True,
+        ):
+            coords = coord if isinstance(coord, tuple) else (coord,)
+            pairs.append((float(value), f"{name}[{','.join(str(c) for c in coords)}]"))
+    return [(value, label) for value, label in pairs if np.isfinite(value)]
+
+
+def _log_convergence(dt, label, max_rhat, min_ess):
+    """Check split-R-hat and ESS on the posterior, log them, and record them.
+
+    Runs before the ``.nc`` is written so a bad population is visible during
+    the run rather than in the notebook days later — past runs recorded R-hat
+    up to 2.76 and 9.42, and nothing in the script noticed at the time.
+
+    R-hat is the diagnostic that carries weight here. Each "chain" is an
+    independent SMC run with its own starting cloud and its own adapted
+    mutation kernel, so between-chain disagreement means what Gelman-Rubin
+    assumes it means.
+
+    **ESS is weaker than it looks for SMC** and is logged for continuity with
+    the MCMC path rather than as a guarantee. It is an autocorrelation
+    estimate, and particles within a chain are exchangeable — their storage
+    order is arbitrary — so a cloud that resampling has collapsed onto a few
+    distinct values still reports an ESS near the particle count. Duplicated
+    particles are what ``smc_num_unique`` measures; read the two together.
+
+    Args:
+        dt: Population DataTree; its ``posterior`` group is checked and the
+            results are written back to its attributes.
+        label: Which fit this is (``"approx"`` / ``"ref"``), for the message.
+        max_rhat: Warn above this R-hat.
+        min_ess: Warn below this ESS.
+    """
+    posterior = dt["posterior"].to_dataset()
+
+    rhat_pairs = _flatten_diagnostic(az.rhat(posterior))
+    ess_pairs = _flatten_diagnostic(az.ess(posterior))
+
+    if rhat_pairs:
+        worst_rhat, rhat_at = max(rhat_pairs)
+        dt.attrs["max_rhat"] = worst_rhat
+        dt.attrs["max_rhat_at"] = rhat_at
+    else:
+        worst_rhat, rhat_at = float("nan"), "n/a (needs >= 2 chains)"
+
+    worst_ess, ess_at = min(ess_pairs) if ess_pairs else (float("nan"), "n/a")
+    if ess_pairs:
+        dt.attrs["min_ess"] = worst_ess
+        dt.attrs["min_ess_at"] = ess_at
+
+    logger.info(
+        "%s convergence: max R-hat %.3f at %s, min ESS %.0f at %s",
+        label, worst_rhat, rhat_at, worst_ess, ess_at,
+    )
+
+    if rhat_pairs and worst_rhat > max_rhat:
+        logger.warning(
+            "%s: max R-hat %.3f at %s exceeds %.3f — the chains disagree, so "
+            "the pooled posterior in this file is not a single distribution. "
+            "Inspect per-chain draws before using it.",
+            label, worst_rhat, rhat_at, max_rhat,
+        )
+    if ess_pairs and worst_ess < min_ess:
+        logger.warning(
+            "%s: min ESS %.0f at %s is below %.0f — quantiles and R-hat on "
+            "that quantity are themselves too noisy to trust.",
+            label, worst_ess, ess_at, min_ess,
+        )
+
+
 def _build_population_datatree(
     particles,
     weights,
@@ -888,6 +984,9 @@ def main(cfg):
         )
         dt["prior"] = prior_ds
         dt["smc_initial_particles"] = initial_ds
+        _log_convergence(
+            dt, "approx", smc_cfg["max_rhat"], smc_cfg["min_ess"],
+        )
         approx_path = f"hierarchical_recovery_pop{pop_idx}_approx.nc"
         logger.info("Saving approx results to %s", approx_path)
         dt.to_netcdf(approx_path)
@@ -928,6 +1027,9 @@ def main(cfg):
             dt_ref["smc_initial_particles"] = _particle_dataset(
                 initial_particles_ref.reshape(-1, initial_particles_ref.shape[-1]),
                 reconstruct, num_subjects, param_names,
+            )
+            _log_convergence(
+                dt_ref, "ref", smc_cfg["max_rhat"], smc_cfg["min_ess"],
             )
             ref_path = f"hierarchical_recovery_pop{pop_idx}_ref.nc"
             logger.info("Saving ref results to %s", ref_path)

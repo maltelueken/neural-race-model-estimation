@@ -122,3 +122,18 @@ hierarchical_recovery:
     # repeat and their R-hat and ESS overstate what was sampled. The counts go
     # to the .nc as smc_num_unique / smc_num_unique_pre_resample.
     min_unique_fraction: 0.5
+
+    # Convergence thresholds, checked on the posterior before each .nc is
+    # written so a bad population surfaces during the run rather than in the
+    # notebook afterwards. Past runs recorded R-hat up to 2.76 and 9.42 with
+    # nothing noticing at the time. The max and min actually seen also go to
+    # the .nc as max_rhat / min_ess, with the variable and coordinate they
+    # occurred at.
+    #
+    # Each "chain" is an independent SMC run with its own starting cloud and
+    # its own adapted mutation kernel, so R-hat measures what Gelman-Rubin
+    # assumes. ESS is the weaker of the two here: particles within a chain are
+    # exchangeable, so it does not penalise the duplicates that
+    # min_unique_fraction is there to catch. Read the two together.
+    max_rhat: 1.05
+    min_ess: 500
