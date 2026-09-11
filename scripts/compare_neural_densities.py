@@ -25,15 +25,15 @@ from flax import nnx
 from jax.scipy import stats
 from omegaconf import DictConfig
 
-from confrdm_jax.flows import load_conditioner, make_mlp_conditioner, spline_flow
-from confrdm_jax.likelihoods.crdm_volterra import solve_volterra_fpt
-from confrdm_jax.likelihoods.rdm import inv_gauss_logpdf, inv_gauss_logsf
+from eamax.accumulators import inv_gauss_logpdf, inv_gauss_logsf, solve_volterra_fpt
+from eamax.flows import load_conditioner, make_mlp_conditioner, spline_flow
+
+from confrdm_jax import configure_jax
+from confrdm_jax.specs import CRDM_CONTEXT_NAMES, WALD_CONTEXT_NAMES
 
 logger = logging.getLogger(__name__)
 
 logging.getLogger("absl").setLevel(logging.ERROR)
-
-jax.config.update('jax_enable_x64', True)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -124,19 +124,27 @@ def _time_fn(fn, params):
     return result, time.perf_counter() - t0
 
 
-def _load_conditioner(path_str, num_bins, num_mid, num_in):
+def _load_conditioner(path_str, num_bins, num_mid, context_names):
+    """Load a checkpoint, checking its conditioning set against `context_names`.
+
+    Nothing in the weights records what the context columns mean, so a reordered set of the
+    same width would load without complaint and produce silently wrong densities.
+    `load_conditioner` compares against the checkpoint's sidecar where there is one.
+    """
     path = Path(path_str)
     if not path.exists():
         warnings.warn(f"Conditioner path not found, skipping: {path}")
         return None
 
     rngs = nnx.Rngs(default=0)
-    model = make_mlp_conditioner(rngs, num_in=num_in, num_mid=num_mid, num_bins=num_bins)
-    return load_conditioner(model, str(path.absolute()))
+    model = make_mlp_conditioner(
+        rngs, num_in=len(context_names), num_mid=num_mid, num_bins=num_bins
+    )
+    return load_conditioner(model, str(path.absolute()), context_names=list(context_names))
 
 
 def run_wald_comparison(conditioner_path, num_bins, num_mid, wald_cfg):
-    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, num_in=3)
+    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, WALD_CONTEXT_NAMES)
     if conditioner is None:
         return None
 
@@ -175,7 +183,7 @@ def run_wald_comparison(conditioner_path, num_bins, num_mid, wald_cfg):
 
 
 def run_crdm_comparison(conditioner_path, dt, num_bins, num_mid, chunk_size, crdm_cfg):
-    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, num_in=5)
+    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, CRDM_CONTEXT_NAMES)
     if conditioner is None:
         return None
 
@@ -239,6 +247,8 @@ def _result_to_dataset(result, param_names):
 
 @hydra.main(version_base=None, config_path="../conf_jax", config_name="compare_densities")
 def main(cfg: DictConfig) -> None:
+    configure_jax(cfg.get("device", "auto"), require_device=cfg.get("require_device", True))
+
     tree_dict: dict[str, xr.Dataset] = {}
 
     # --- Wald ---

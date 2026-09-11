@@ -5,8 +5,11 @@ hydra:
     dir: outputs/compare_densities
   job:
     chdir: False
-    env_set:
-      JAX_ENABLE_X64: "true"
+
+# See conf_jax/config.yaml. `auto` here rather than failing hard: this script is often run
+# interactively on a laptop, where there is no accelerator to require.
+device: auto
+require_device: true
 
 wald:
   # set to path string to enable Wald comparison

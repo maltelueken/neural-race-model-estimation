@@ -18,6 +18,7 @@ module load 2023
 source bin/activate
 
 python scripts/parameter_recovery.py --multirun \
+    device=gpu \
     model=rdm \
     model.num_bins=12 \
     model.num_mid=128 \

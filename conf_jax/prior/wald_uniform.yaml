@@ -14,7 +14,7 @@
 #
 # Cost of the change: the box grows 2.8x (72 -> 200), so the flow has less
 # training density per unit volume.  Scale train_steps up accordingly.
-_target_: confrdm_jax.simulators.create_wald_prior_uniform
+_target_: confrdm_jax.priors.create_wald_prior_uniform
 v_min: 0.0
 v_max: 8.0
 s_min: 0.0

@@ -2,6 +2,17 @@ defaults:
   - /prior@training_prior: wald_uniform
   - /prior@recovery_prior: rdm_informed
 
+# Parameterization, from confrdm_jax.specs. It is the single source of truth for the
+# parameter vector's names, order and links — both recovery scripts read them from here
+# rather than from a duplicated list.
+spec: rdm
+
+# The flow's conditioning columns, in the order it is trained on. Written to the checkpoint
+# sidecar and checked on load: a reordered context of the same width would otherwise load
+# without complaint and produce silently wrong densities. `t0` is absent on purpose — the
+# flow models decision times, so `t0` is a pure location shift applied by the race.
+context_names: [v, s, b]
+
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_wald
 
@@ -21,13 +32,10 @@ run_reference_recovery: true
 
 num_bins: 4
 num_mid: 64
-num_params: 3
 
 hierarchical:
-  num_params: 5
-  param_names: ["v_intercept", "v_slope", "s_true", "b", "t0"]
   prior_factory:
-    _target_: confrdm_jax.simulators.create_hierarchical_rdm_prior_lkj_mvn
+    _target_: confrdm_jax.priors.create_hierarchical_rdm_prior_lkj_mvn
     _partial_: true
   test_sampler:
     _target_: confrdm_jax.simulators.sample_conditional_rdm_hierarchical_lkj_mvn
@@ -49,6 +57,7 @@ hierarchical:
     # the worst case to v=4.98 / s=4.08 / b=3.38; inverse_gamma_scale is scaled
     # x4 alongside it so the *median* of s is unchanged at 0.11.
     inverse_gamma_concentration: 15.0
+    # One entry per parameter, in `spec` order: [v_intercept, v_slope, s_true, b, t0].
     inverse_gamma_scale:    [1.6, 1.6, 1.6, 1.6, 1.0]
     mu_loc:                 [0.1, 0.3, 0.4, 0.4, -1.2]
     # 0.15 rather than 0.25: mu_loc puts the median of s_true and b at 1.49

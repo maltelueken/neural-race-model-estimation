@@ -23,18 +23,16 @@ from jax.scipy import stats
 
 import distrax
 
-from confrdm_jax.flows import (
-    load_conditioner,
-    make_mlp_conditioner,
-)
+from eamax.flows import load_conditioner, make_mlp_conditioner
+from eamax.flows.model import RANGE_MAX, RANGE_MIN
 
 
 def _spline_logprobs(data_scalar, spline_params_vec):
     """Per-example spline-flow log_pdf and log_sf — all shapes static."""
     spline_layer = distrax.RationalQuadraticSpline(
         spline_params_vec,
-        range_min=-5.0,
-        range_max=5.0,
+        range_min=RANGE_MIN,
+        range_max=RANGE_MAX,
         boundary_slopes="identity",
         min_bin_size=1e-4,
     )

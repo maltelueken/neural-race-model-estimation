@@ -23,14 +23,21 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    # The accumulator densities, the race likelihood, the parameterization layer,
+    # simulation, the neural flow, the hierarchical prior family and the samplers all live
+    # in eamax. Not on PyPI yet, so install it from a sibling checkout:
+    #     pip install -e ../eamax
+    # before `pip install -e .`. The extras are what this repository uses: `flows` for the
+    # conditional spline flow, `inference` for NUTS and tempered SMC.
+    "eamax[flows,inference]",
     "arviz",
-    "bayesflow",
-    "blackjax",
+    "bayesflow",   # only for classifier_two_sample_test in scripts/c2st_recovery.py
+    "blackjax>=1.2.5",
     "distrax",
     "flax",
     "hydra-core",
     "jax",
-    "jax2onnx",
+    "jax2onnx",    # only for scripts/export_conditioner_onnx.py
     "keras",
     "matplotlib",
     "netcdf4",
@@ -38,8 +45,8 @@ dependencies = [
     "omegaconf",
     "onnx",
     "onnxruntime",
+    "optax",
     "orbax-checkpoint",
-    "polars",
     "scipy",
     "seaborn",
     "tensorflow-probability",
@@ -55,7 +62,11 @@ requires-python = ">=3.10"
 version = "0.0.1"
 
 [project.optional-dependencies]
+# `pip install -U "jax[cuda12]"` for the GPU the SLURM jobs request; `device=gpu` fails
+# loudly rather than falling back to CPU when the plugin is missing.
+gpu = ["jax[cuda12]"]
 dev = [
+    "pytest",
     "build",  # build is not only used in publishing (below), but also in the template's test suite
     "bump-my-version",
     "ruff",
@@ -116,6 +127,6 @@ pydocstyle.convention = "google"
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["confrdm"]
+known-first-party = ["confrdm_jax"]
 force-single-line = true
 no-lines-before = ["future","standard-library","third-party","first-party","local-folder"]

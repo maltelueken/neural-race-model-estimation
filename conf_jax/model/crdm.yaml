@@ -2,6 +2,10 @@ defaults:
   - /prior@training_prior: crdm_single_uniform
   - /prior@recovery_prior: crdm_informed
 
+# See conf_jax/model/rdm.yaml for what `spec` and `context_names` are for.
+spec: crdm
+context_names: [v, amp, tau, s, b]
+
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_crdm_single
   dt: 0.004
@@ -16,22 +20,19 @@ test_sampler:
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_crdm_likelihood_factory_approx
   _partial_: true
-  # Censoring horizon, so `rt = -1.0` sentinels are scored by log S(t_max)
-  # rather than taking the invalid-RT penalty.  Interpolated from the sampler
-  # that produces the data, so the two cannot drift apart.
+  # Censoring horizon, so `rt = -1.0` sentinels are scored by the product of both
+  # accumulators' survival at t_max rather than landing on the likelihood floor.
+  # Interpolated from the sampler that produces the data, so the two cannot drift apart.
   t_max: ${model.test_sampler.t_max}
 
 run_reference_recovery: false
 
 num_bins: 4
 num_mid: 64
-num_params: 5
 
 hierarchical:
-  num_params: 7
-  param_names: ["v_c_intercept", "v_c_slope", "amp", "tau", "s_true", "b", "t0"]
   prior_factory:
-    _target_: confrdm_jax.simulators.create_hierarchical_crdm_prior_lkj_mvn
+    _target_: confrdm_jax.priors.create_hierarchical_crdm_prior_lkj_mvn
     _partial_: true
   test_sampler:
     _target_: confrdm_jax.simulators.sample_conditional_crdm_hierarchical_lkj_mvn
@@ -65,6 +66,8 @@ hierarchical:
     # from 0.22 to 0.17 -- a substantive claim that people differ less in
     # conflict sensitivity and pulse amplitude than the x4 rule would imply.
     inverse_gamma_concentration: 15.0
+    # One entry per parameter, in `spec` order:
+    # [v_c_intercept, v_c_slope, amp, tau, s_true, b, t0].
     inverse_gamma_scale:    [1.6, 2.0, 2.5, 1.6, 1.6, 1.6, 1.0]
     # mu_loc[1] = 0.92 puts the median of v_c_slope at exp(0.92) = 2.51.  The
     # marginal median of a subject parameter is exactly exp(mu_loc), since

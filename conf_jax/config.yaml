@@ -20,12 +20,17 @@ hydra:
         exclude_keys:
           - model
           - conditioner_dir
-    env_set:
-      JAX_ENABLE_X64: true
   job_logging:
     handlers:
       file:
         mode: w
+
+# Compute device for every entry point. `gpu` maps to JAX's CUDA platform and, with
+# `require_device`, fails loudly rather than falling back to CPU -- a fallback on a GPU node
+# runs correctly and roughly two orders of magnitude slower, which is easy to miss in a log.
+# `auto` takes whatever JAX finds and never fails. The SLURM jobs pass `device=gpu`.
+device: auto
+require_device: true
 
 train_steps: 50000
 train_batch_size: 64
@@ -42,13 +47,21 @@ test_num_datasets: 100
 
 learning_rate: 5e-3
 
-# Starting-position support constraint, applied by both recovery scripts.
-# The likelihood is undefined for t0 >= min(rt), and the penalty branch that
-# covers that region has a gradient of order 1e3, so a sampler started above the
-# boundary diverges on every step and never recovers. Both scripts therefore
-# draw their starts from the prior *conditioned* on t0 < t0_max_fraction *
-# min_rt, by rejection rather than by clipping — a clip is a point mass, and it
-# lands in the one coordinate the dispersion exists to spread.
+# Starting-position support constraint, applied by both recovery scripts through
+# eamax.inference.init.T0Support.
+#
+# The likelihood is undefined for t0 >= min(rt). eamax scores such a trial at the
+# flat per-trial floor, so a chain that *starts* there starts on a plateau: the
+# gradient says nothing about which way t0 should move and window adaptation
+# cannot help, because flatness is not a curvature scale. (The old likelihood put
+# a slope-1e3 ramp there instead, which pushed t0 back down but made one such
+# trial outweigh a thousand real ones.) Nothing in the likelihood recovers such a
+# chain, so dispersion has to be support-aware to be worth anything.
+#
+# Both scripts therefore draw their starts from the prior *conditioned* on
+# t0 < t0_max_fraction * min_rt, by rejection rather than by clipping — a clip is
+# a point mass, and it lands in the one coordinate the dispersion exists to
+# spread.
 init:
   # Below 1.0 so starts sit off the wall, but only just: min_rt is t0_true plus
   # the fastest decision time, so a low cap excludes the *true* t0 from the
@@ -67,6 +80,9 @@ init:
   # The single-subject path runs num_warmup window-adaptation steps per chain
   # and can absorb the residual — worst on the CRDM, whose true t0 sits at a
   # median 0.926 of min_rt (RDM 0.807, hierarchical 0.779).
+  #
+  # eamax's own default is the same 0.97 (init.DEFAULT_MAX_T0_FRACTION); it is
+  # passed explicitly so the value stays visible next to the measurements.
   t0_max_fraction: 0.97
 
   # Rejection budget per starting position. Acceptance is 9.5% for a whole
@@ -112,6 +128,12 @@ hierarchical_recovery:
     num_integration_steps: 100
     num_mcmc_steps: 1
     target_ess: 0.5
+
+    # How the per-chain SMC runs are mapped. `sequential` (jax.lax.map) costs wall-clock
+    # linearly in num_chains but keeps peak memory to one chain's cloud; `vmap` runs them
+    # together, which is what a GPU is for, at num_chains times the memory. Drop back to
+    # `sequential` if a population's cloud does not fit.
+    map_chains: vmap
 
     # Warn when a chain ends with fewer than this fraction of its particles
     # distinct. Resampling duplicates particles and num_mcmc_steps mutation

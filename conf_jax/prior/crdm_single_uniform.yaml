@@ -20,7 +20,7 @@
 # and so raise censoring) are offset by the higher v_c ceiling, which speeds
 # them.  The same trade in isolation: v_c_max 8.0 with these s/b gives 4.74%,
 # v_c_max 10.0 gives 3.66%.
-_target_: confrdm_jax.simulators.create_crdm_single_prior_uniform
+_target_: confrdm_jax.priors.create_crdm_single_prior_uniform
 v_c_min: 0.0
 v_c_max: 14.0
 amp_min: 0.0

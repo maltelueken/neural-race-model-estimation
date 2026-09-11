@@ -18,6 +18,7 @@ module load 2023
 source bin/activate
 
 python scripts/parameter_recovery.py \
+    device=gpu \
     model=crdm \
     model.sampler.dt=0.0005 \
     model.num_bins=12 \

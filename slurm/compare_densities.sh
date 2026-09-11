@@ -15,4 +15,4 @@ module load 2023
 
 source bin/activate
 
-python scripts/compare_neural_densities.py
+python scripts/compare_neural_densities.py device=gpu
