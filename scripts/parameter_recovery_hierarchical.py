@@ -34,7 +34,7 @@ Writes ``hierarchical_recovery_pop{N}_approx.nc`` per population.
 import logging
 from pathlib import Path
 
-import arviz.preview as az
+import arviz as az
 import blackjax
 import hydra
 import jax

@@ -15,10 +15,8 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -49,17 +47,20 @@ dependencies = [
     "orbax-checkpoint",
     "scipy",
     "seaborn",
-    "tensorflow-probability",
     "tqdm",
     "xarray",
+    "tfp-nightly>=0.26.0.dev20260912",
 ]
 description = "A JAX implementation for estimating the Conflict Racing Diffusion Model"
 keywords = [""]
 license = {file = "LICENSE"}
 name = "confrdm"
 readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 version = "0.0.1"
+
+[tool.uv.sources]
+eamax = { git = "https://github.com/maltelueken/eamax.git", tag = "v0.1.0" }
 
 [project.optional-dependencies]
 # `pip install -U "jax[cuda12]"` for the GPU the SLURM jobs request; `device=gpu` fails
@@ -86,7 +87,7 @@ Issues = "https://github.com/maltelueken/racing-diffusion-conflict/confrdm/issue
 [tool.tox]
 legacy_tox_ini = """
 [tox]
-envlist = py310,py311,py312
+envlist = py311,py312
 skip_missing_interpreters = true
 
 """
