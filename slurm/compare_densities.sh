@@ -9,10 +9,12 @@
 #SBATCH --output=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/compare_densities_%j.out
 #SBATCH --error=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/compare_densities_%j.err
 
+module purge
+module load 2025
+
+# Make sure that uv is on path
+export PATH="$HOME/.local/bin:$PATH"
+
 cd /projects/0/prjs1372/racing-diffusion-conflict
 
-module load 2023
-
-source bin/activate
-
-python scripts/compare_neural_densities.py device=gpu
+uv run --frozen --extra gpu python scripts/compare_neural_densities.py device=gpu

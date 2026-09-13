@@ -11,13 +11,15 @@
 
 base_dir=/projects/0/prjs1372/racing-diffusion-conflict
 
+module purge
+module load 2025
+
+# Make sure that uv is on path
+export PATH="$HOME/.local/bin:$PATH"
+
 cd ${base_dir}
 
-module load 2023
-
-source bin/activate
-
-python scripts/parameter_recovery.py --multirun \
+uv run --frozen --extra gpu python scripts/parameter_recovery.py --multirun \
     device=gpu \
     model=rdm \
     model.num_bins=12 \

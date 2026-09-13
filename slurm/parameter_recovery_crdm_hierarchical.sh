@@ -9,13 +9,15 @@
 #SBATCH --output=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/parameter_recovery_crdm_%j.out
 #SBATCH --error=/projects/0/prjs1372/racing-diffusion-conflict/slurm/logs/parameter_recovery_crdm_%j.err
 
+module purge
+module load 2025
+
+# Make sure that uv is on path
+export PATH="$HOME/.local/bin:$PATH"
+
 cd /projects/0/prjs1372/racing-diffusion-conflict
 
-module load 2023
-
-source bin/activate
-
-python scripts/parameter_recovery_hierarchical.py \
+uv run --frozen --extra gpu python scripts/parameter_recovery_hierarchical.py \
     device=gpu \
     model=crdm \
     model.sampler.dt=0.0005 \
