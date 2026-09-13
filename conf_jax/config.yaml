@@ -135,9 +135,14 @@ hierarchical_recovery:
 
     # How the per-chain SMC runs are mapped. `sequential` (jax.lax.map) costs wall-clock
     # linearly in num_chains but keeps peak memory to one chain's cloud; `vmap` runs them
-    # together, which is what a GPU is for, at num_chains times the memory. Drop back to
-    # `sequential` if a population's cloud does not fit.
-    map_chains: vmap
+    # together, at num_chains times the memory.
+    #
+    # `sequential` is what the pre-eamax script did. `vmap` does not fit: the flow's
+    # activations for one HMC gradient are a float64 buffer of
+    # chains x particles x subjects x trials x 4*num_mid, which at the defaults
+    # (4 x 1000 x 20 x 250 x 256) is 38.2 GiB, the allocation that failed with
+    # RESOURCE_EXHAUSTED. One chain at a time needs 9.5 GiB.
+    map_chains: sequential
 
     # Warn when a chain ends with fewer than this fraction of its particles
     # distinct. Resampling duplicates particles and num_mcmc_steps mutation
