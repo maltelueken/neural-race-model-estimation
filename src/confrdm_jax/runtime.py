@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 #: an accelerator, and never fails.
 PLATFORMS = ("auto", "gpu", "cpu", "tpu")
 
+#: JAX names a GPU backend by vendor in ``jax_platforms`` but reports its devices under the
+#: generic ``"gpu"``, so a CUDA device's ``.platform`` is ``"gpu"``, not ``"cuda"``. Device
+#: platforms are normalized through this map before being compared with `device`.
+_DEVICE_PLATFORM_ALIASES = {"cuda": "gpu", "rocm": "gpu"}
+
 
 def configure_jax(device="auto", x64=True, require_device=True):
     """Set precision and platform, then report the devices JAX actually has.
@@ -63,18 +68,16 @@ def configure_jax(device="auto", x64=True, require_device=True):
         jax.config.update("jax_platforms", f"{platform},cpu" if platform != "cpu" else "cpu")
 
     devices = jax.devices()
-    kinds = sorted({d.platform for d in devices})
+    kinds = sorted({_DEVICE_PLATFORM_ALIASES.get(d.platform, d.platform) for d in devices})
     logger.info("JAX devices: %s (x64=%s)", devices, jax.config.jax_enable_x64)
 
-    if require_device and device in ("gpu", "tpu"):
-        wanted = "cuda" if device == "gpu" else device
-        if wanted not in kinds:
-            raise RuntimeError(
-                f"device={device!r} was requested but JAX only sees {kinds}. A job that "
-                "falls back to CPU here runs correctly and roughly two orders of magnitude "
-                "slower, so this is an error rather than a warning. Install the matching "
-                "JAX accelerator plugin (e.g. `pip install -U \"jax[cuda12]\"`), or set "
-                "`device=auto` to accept whatever is available."
-            )
+    if require_device and device in ("gpu", "tpu") and device not in kinds:
+        raise RuntimeError(
+            f"device={device!r} was requested but JAX only sees {kinds}. A job that "
+            "falls back to CPU here runs correctly and roughly two orders of magnitude "
+            "slower, so this is an error rather than a warning. Install the matching "
+            "JAX accelerator plugin (e.g. `pip install -U \"jax[cuda12]\"`), or set "
+            "`device=auto` to accept whatever is available."
+        )
 
     return devices

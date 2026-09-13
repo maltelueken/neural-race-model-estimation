@@ -25,7 +25,7 @@ def test_cpu_is_always_available():
 
 
 @pytest.mark.skipif(
-    any(d.platform == "cuda" for d in jax.devices()), reason="a GPU is actually present"
+    any(d.platform in ("gpu", "cuda") for d in jax.devices()), reason="a GPU is actually present"
 )
 def test_missing_gpu_is_an_error_not_a_fallback():
     # A job that requests a GPU and silently runs on CPU takes roughly two orders of
