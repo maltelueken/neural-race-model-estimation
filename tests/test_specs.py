@@ -63,8 +63,10 @@ def test_make_design_fills_target_and_distractor():
     data = jnp.array([[0.5, 1.0, 1.0], [0.6, 0.0, 0.0], [0.7, 1.0, 1.0]])
     design = make_design(data)
 
-    # The target accumulator is index 1 on every trial.
-    np.testing.assert_array_equal(design.target, jnp.ones(3))
+    # The target accumulator is index 1 on every trial, given as a scalar so eamax treats
+    # the quantities built from it as trial-invariant.
+    assert design.target.shape == ()
+    assert int(design.target) == 1
     # Congruent (condition 1) puts the distracting feature on the target accumulator.
     np.testing.assert_array_equal(design.distractor, data[:, 2])
     np.testing.assert_array_equal(design.response, data[:, 1])

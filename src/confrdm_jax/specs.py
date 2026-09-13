@@ -161,7 +161,12 @@ def make_design(data, mask=None):
     The two columns the spec needs but the data do not carry are filled in here, because
     both are constants of this experiment rather than observations:
 
-    * ``target`` is all ones — the target accumulator is index 1 on every trial.
+    * ``target`` is the scalar 1 — the target accumulator is index 1 on every trial. A scalar
+      rather than a ``(T,)`` column of ones, because that is how `eamax` learns the RDM's
+      accumulator parameters are the same on every trial: a
+      :class:`~eamax.flows.FlowAccumulator` then runs its conditioner once per accumulator
+      instead of once per trial, which is the difference between a hierarchical SMC cloud
+      fitting on the GPU and not. The densities are identical either way.
     * ``distractor`` is the congruency column, which names the accumulator the conflict
       pulse rides. A two-column (RDM) dataset has no conflict and gets none.
 
@@ -182,7 +187,7 @@ def make_design(data, mask=None):
     return TrialDesign(
         rt=rt,
         response=data[:, 1],
-        target=jnp.ones_like(rt),
+        target=1,
         condition=condition,
         distractor=condition,
         mask=mask,

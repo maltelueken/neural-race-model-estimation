@@ -60,7 +60,7 @@ requires-python = ">=3.11"
 version = "0.0.1"
 
 [tool.uv.sources]
-eamax = { git = "https://github.com/maltelueken/eamax.git", tag = "v0.1.0" }
+eamax = { git = "https://github.com/maltelueken/eamax.git", tag = "v0.1.1" }
 
 [project.optional-dependencies]
 # `pip install -U "jax[cuda12]"` for the GPU the SLURM jobs request; `device=gpu` fails
