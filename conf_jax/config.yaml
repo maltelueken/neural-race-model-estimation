@@ -20,6 +20,10 @@ hydra:
         exclude_keys:
           - model
           - conditioner_dir
+          # Where a job runs does not change what it computes, so it must not change where
+          # the checkpoint lands: recovery on CPU has to find a conditioner trained on GPU.
+          - device
+          - require_device
   job_logging:
     handlers:
       file:
