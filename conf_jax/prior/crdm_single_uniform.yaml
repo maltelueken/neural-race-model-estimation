@@ -1,25 +1,3 @@
-# Training prior for the CRDM flow -- the box the conditioner is fitted over.
-# See conf_jax/prior/wald_uniform.yaml for why this is not an inference prior
-# and why the box has to cover more than the bulk of the hierarchical prior.
-#
-# Against the hierarchical prior in conf_jax/model/crdm.yaml, the old box left
-# almost no margin on four of its five axes -- v_c reached 6.88 of 8.0, amp
-# 0.90 of 1.0, s_true 2.87 of 3.0 and b 2.32 of 3.0.  Nothing fell outside, but
-# a warm-up trajectory only has to overshoot slightly to leave support.  The
-# new limits give every axis at least ~1.4x headroom over the observed max.
-# tau is untouched: it tops out at 0.27, so 1.0 is already 3.7x.
-#
-# v_c_max is 14.0 rather than 10.0 because mu_loc[1] in the hierarchical prior
-# puts the median of v_c_slope at 2.51, which carries v_c_true (= v_c_intercept
-# + v_c_slope) up to a max of 9.88.  At v_c_max = 10.0 that is 1.01x headroom --
-# no margin at all, and the condition that degenerates NUTS adaptation.
-#
-# Cost: the box grows 7.3x over the original (72 -> 525), so scale train_steps
-# up to match.  Censoring at t_max = 4.0 does *not* worsen -- it is 2.47% here
-# against 2.58% for the original box, because s_max/b_max (which slow crossings
-# and so raise censoring) are offset by the higher v_c ceiling, which speeds
-# them.  The same trade in isolation: v_c_max 8.0 with these s/b gives 4.74%,
-# v_c_max 10.0 gives 3.66%.
 _target_: confrdm_jax.priors.create_crdm_single_prior_uniform
 v_c_min: 0.0
 v_c_max: 8.0
@@ -28,6 +6,6 @@ amp_max: 1.0
 tau_min: 0.02
 tau_max: 0.5
 s_min: 0.0
-s_max: 5.0
+s_max: 3.0
 b_min: 0.0
-b_max: 5.0
+b_max: 3.0
