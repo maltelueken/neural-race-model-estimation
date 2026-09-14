@@ -13,6 +13,19 @@ spec: rdm
 # flow models decision times, so `t0` is a pure location shift applied by the race.
 context_names: [v, s, b]
 
+# The box the flow was trained on, per flow input, interpolated from the training prior so
+# the two cannot disagree. The neural likelihoods clip the flow's inputs to it: outside the
+# box the flow extrapolates, with gradient spikes and flat plateaus that collapse step-size
+# adaptation, while a clipped input sees the density at the box edge. Inside the box nothing
+# changes. See confrdm_jax.likelihoods._flow_accumulator and CONFRDM_JAX.md §16.
+#
+# Only valid for a conditioner trained on *this* training prior. Recovering with a
+# checkpoint trained on a different box needs the matching model.training_prior overrides.
+flow_context_bounds:
+  v: ['${model.training_prior.v_min}', '${model.training_prior.v_max}']
+  s: ['${model.training_prior.s_min}', '${model.training_prior.s_max}']
+  b: ['${model.training_prior.b_min}', '${model.training_prior.b_max}']
+
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_wald
 
@@ -23,6 +36,7 @@ test_sampler:
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_rdm_likelihood_factory_approx
   _partial_: true
+  context_bounds: ${model.flow_context_bounds}
 
 likelihood_factory_ref:
   _target_: confrdm_jax.likelihoods.create_rdm_two_accumulators_likelihood
@@ -43,6 +57,7 @@ hierarchical:
   likelihood_factory_approx:
     _target_: confrdm_jax.likelihoods.create_rdm_hierarchical_likelihood_factory_approx
     _partial_: true
+    context_bounds: ${model.flow_context_bounds}
   likelihood_factory_ref:
     _target_: confrdm_jax.likelihoods.create_rdm_hierarchical_likelihood
     _partial_: true

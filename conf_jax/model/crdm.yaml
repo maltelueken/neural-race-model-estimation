@@ -6,6 +6,21 @@ defaults:
 spec: crdm
 context_names: [v, amp, tau, s, b]
 
+# The box the flow was trained on, per flow input, interpolated from the training prior so
+# the two cannot disagree. The neural likelihoods clip the flow's inputs to it: outside the
+# box the flow extrapolates, with gradient spikes and flat plateaus that collapse step-size
+# adaptation, while a clipped input sees the density at the box edge. Inside the box nothing
+# changes. See confrdm_jax.likelihoods._flow_accumulator and CONFRDM_JAX.md §16.
+#
+# Only valid for a conditioner trained on *this* training prior. Recovering with a
+# checkpoint trained on a different box needs the matching model.training_prior overrides.
+flow_context_bounds:
+  v:   ['${model.training_prior.v_c_min}', '${model.training_prior.v_c_max}']
+  amp: ['${model.training_prior.amp_min}', '${model.training_prior.amp_max}']
+  tau: ['${model.training_prior.tau_min}', '${model.training_prior.tau_max}']
+  s:   ['${model.training_prior.s_min}', '${model.training_prior.s_max}']
+  b:   ['${model.training_prior.b_min}', '${model.training_prior.b_max}']
+
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_crdm_single
   dt: 0.004
@@ -24,6 +39,7 @@ likelihood_factory_approx:
   # accumulators' survival at t_max rather than landing on the likelihood floor.
   # Interpolated from the sampler that produces the data, so the two cannot drift apart.
   t_max: ${model.test_sampler.t_max}
+  context_bounds: ${model.flow_context_bounds}
 
 run_reference_recovery: false
 
@@ -43,6 +59,7 @@ hierarchical:
     _target_: confrdm_jax.likelihoods.create_crdm_hierarchical_likelihood_factory_approx
     _partial_: true
     t_max: ${model.hierarchical.test_sampler.t_max}
+    context_bounds: ${model.flow_context_bounds}
   prior:
     lkj_concentration: 2.0
     # See conf_jax/model/rdm.yaml for the rationale: concentration is the tail

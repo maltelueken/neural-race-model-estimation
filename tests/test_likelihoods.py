@@ -214,6 +214,105 @@ def test_hierarchical_neural_factories_run(remat, rdm_theta, crdm_theta,
     assert jnp.isfinite(crdm_value)
 
 
+CRDM_BOX = {"v": (0.0, 8.0), "amp": (0.0, 1.0), "tau": (0.02, 0.5), "s": (0.0, 5.0), "b": (0.0, 5.0)}
+
+
+def test_context_clamp_is_inert_inside_the_box(crdm_theta, crdm_conditioner):
+    # Every flow input of `crdm_theta` lies inside the box, so clipping must not change a
+    # single bit — the clamp is only allowed to act where the flow was never trained.
+    data = simulate_crdm(jax.random.key(8), crdm_theta, 100, dt=0.01, t_max=2.0)
+    plain = create_crdm_likelihood_factory_approx(crdm_conditioner, t_max=2.0)(data)
+    clamped = create_crdm_likelihood_factory_approx(
+        crdm_conditioner, t_max=2.0, context_bounds=CRDM_BOX,
+    )(data)
+    np.testing.assert_array_equal(np.asarray(clamped(crdm_theta)), np.asarray(plain(crdm_theta)))
+
+
+def test_context_clamp_evaluates_the_flow_at_the_box_edge(crdm_theta, crdm_conditioner):
+    # Outside the box the flow sees the edge value, so a tau beyond tau_max scores exactly as
+    # tau_max does, and — tau being a flow input only — its gradient is exactly zero rather
+    # than whatever the extrapolated spline would produce.
+    data = simulate_crdm(jax.random.key(9), crdm_theta, 100, dt=0.01, t_max=2.0)
+    box = {**CRDM_BOX, "tau": (0.02, 0.05)}
+    clamped = create_crdm_likelihood_factory_approx(
+        crdm_conditioner, t_max=2.0, context_bounds=box,
+    )(data)
+    plain = create_crdm_likelihood_factory_approx(crdm_conditioner, t_max=2.0)(data)
+
+    outside = crdm_theta.at[3].set(jnp.log(0.1))
+    at_edge = crdm_theta.at[3].set(jnp.log(0.05))
+    np.testing.assert_allclose(
+        np.asarray(clamped(outside)), np.asarray(plain(at_edge)), rtol=1e-12,
+    )
+
+    grad = jax.grad(lambda x: jnp.sum(clamped(x)))(outside)
+    assert jnp.all(jnp.isfinite(grad))
+    assert float(grad[3]) == 0.0
+
+
+def test_hierarchical_factories_accept_context_bounds(rdm_theta, crdm_theta,
+                                                      wald_conditioner, crdm_conditioner):
+    thetas = jnp.stack([rdm_theta, rdm_theta + 0.05])
+    data = jnp.stack([simulate_rdm(jax.random.key(i), rdm_theta, 50) for i in range(2)])
+    mask = jnp.ones((2, 50), dtype=bool)
+    rdm_box = {"v": (0.0, 8.0), "s": (0.0, 5.0), "b": (0.0, 5.0)}
+    np.testing.assert_array_equal(
+        np.asarray(create_rdm_hierarchical_likelihood_factory_approx(
+            wald_conditioner, context_bounds=rdm_box)(data, mask)(thetas)),
+        np.asarray(create_rdm_hierarchical_likelihood_factory_approx(
+            wald_conditioner)(data, mask)(thetas)),
+    )
+
+    crdm_thetas = jnp.stack([crdm_theta, crdm_theta + 0.05])
+    crdm_data = jnp.stack([
+        simulate_crdm(jax.random.key(i), crdm_theta, 50, dt=0.01, t_max=2.0) for i in range(2)
+    ])
+    np.testing.assert_array_equal(
+        np.asarray(create_crdm_hierarchical_likelihood_factory_approx(
+            crdm_conditioner, t_max=2.0, context_bounds=CRDM_BOX)(crdm_data, mask)(crdm_thetas)),
+        np.asarray(create_crdm_hierarchical_likelihood_factory_approx(
+            crdm_conditioner, t_max=2.0)(crdm_data, mask)(crdm_thetas)),
+    )
+
+
+@pytest.mark.parametrize("bounds", [{"t0": (0.0, 1.0)}, {"tau": (0.5, 0.5)}])
+def test_bad_context_bounds_raise(bounds, crdm_conditioner):
+    # A misspelled name would otherwise leave that input unclamped without a word.
+    with pytest.raises(ValueError):
+        create_crdm_likelihood_factory_approx(crdm_conditioner, context_bounds=bounds)
+
+
+@pytest.mark.parametrize(("model", "prior_keys"), [
+    ("rdm", {"v": "v", "s": "s", "b": "b"}),
+    ("crdm", {"v": "v_c", "amp": "amp", "tau": "tau", "s": "s", "b": "b"}),
+])
+def test_config_clamps_to_the_training_prior(model, prior_keys):
+    # The clamp is only right if it is the box the flow was trained on, so the config wires
+    # it by interpolation. Check both factories get it, and that it follows an override.
+    from pathlib import Path
+
+    from hydra import compose, initialize_config_dir
+    from hydra.utils import instantiate
+
+    from confrdm_jax.likelihoods import _normalize_context_bounds
+
+    config_dir = str(Path(__file__).parents[1] / "conf_jax")
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        cfg = compose("config", overrides=[f"model={model}", "model.training_prior.b_max=4.5"])
+
+    training_prior = cfg.model.training_prior
+    expected = {
+        name: (training_prior[f"{key}_min"], training_prior[f"{key}_max"])
+        for name, key in prior_keys.items()
+    }
+    assert expected["b"][1] == 4.5
+
+    for node in (cfg.model.likelihood_factory_approx,
+                 cfg.model.hierarchical.likelihood_factory_approx):
+        bounds = instantiate(node).keywords["context_bounds"]
+        assert _normalize_context_bounds(bounds, tuple(prior_keys)) == expected
+
+
 def test_gradients_are_finite(rdm_theta, wald_conditioner):
     # NUTS differentiates through this, and a NaN anywhere in the guard logic poisons the
     # whole gradient rather than one term.

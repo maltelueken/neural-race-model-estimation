@@ -3,8 +3,9 @@
 Every likelihood here is :func:`eamax.race.race_loglik` with a different accumulator behind
 it. The race itself — winner's density times losers' survival, the ``t0`` shift, the
 likelihood floor, NaN containment, the padding mask and right-censoring — lives in `eamax`
-and is applied once, to the assembled per-trial total. Nothing in this module clamps
-anything.
+and is applied once, to the assembled per-trial total. The one thing this module clamps is
+a flow's *inputs*, to the box the flow was trained on, when a factory is given
+``context_bounds`` — see :func:`_flow_accumulator`.
 
 Which accumulator:
 
@@ -67,7 +68,39 @@ __all__ = [
 ]
 
 
-def _flow_accumulator(conditioner, context_names, remat=False):
+def _normalize_context_bounds(context_bounds, context_names):
+    """`context_bounds` as ``{name: (low, high)}`` floats, checked against `context_names`.
+
+    Accepts any mapping of name to a two-element sequence, so an OmegaConf ``DictConfig``
+    handed over by Hydra works as-is. A name the flow is not conditioned on is an error
+    rather than ignored: it is almost always a typo, and a silently absent clamp is exactly
+    the failure the clamp exists to prevent.
+    """
+    if context_bounds is None:
+        return {}
+    bounds = {}
+    for key, limits in context_bounds.items():
+        name = str(key)
+        if name not in context_names:
+            raise ValueError(
+                f"context_bounds names {name!r}, which is not a flow input; "
+                f"expected a subset of {list(context_names)}.",
+            )
+        low, high = (float(limit) for limit in limits)
+        if not low < high:
+            raise ValueError(f"context_bounds[{name!r}] = ({low}, {high}) is empty.")
+        bounds[name] = (low, high)
+    return bounds
+
+
+def _clamped(transform, low, high):
+    """`transform` (or the identity) followed by a clip to ``[low, high]``."""
+    if transform is None:
+        return lambda value: jnp.clip(value, low, high)
+    return lambda value: jnp.clip(transform(value), low, high)
+
+
+def _flow_accumulator(conditioner, context_names, remat=False, context_bounds=None):
     """A :class:`eamax.flows.FlowAccumulator` over `context_names`.
 
     ``amp`` is passed through ``abs`` because the pulse's sign selected *which* accumulator
@@ -75,8 +108,21 @@ def _flow_accumulator(conditioner, context_names, remat=False):
     trained on ``|amp|``. Under :mod:`confrdm_jax.specs` the routing is a design column and
     ``amp`` is already non-negative, so the transform is a no-op on current configurations
     and a guard against a spec that reintroduces a signed amplitude.
+
+    **Clamping to the training box.** With `context_bounds`, each named input is clipped to
+    the ``(low, high)`` range the conditioner was trained over before it reaches the flow.
+    Outside that box the spline flow extrapolates, and its log-density develops gradient
+    spikes and flat plateaus that collapse step-size adaptation and freeze an SMC cloud —
+    which is why the box used to be sized to the most extreme prior draw. Clipped, a particle
+    that strays outside sees the density at the box edge instead: bounded and continuous,
+    with zero gradient along the clipped direction, so the prior alone pulls it back. Inside
+    the box the likelihood is bit-identical. Only the flow's inputs are clipped; the inverse
+    Gaussian accumulator of the hybrid race stays exact everywhere.
     """
-    transform = {"amp": jnp.abs} if "amp" in context_names else None
+    transform = {"amp": jnp.abs} if "amp" in context_names else {}
+    for name, (low, high) in _normalize_context_bounds(context_bounds, context_names).items():
+        transform[name] = _clamped(transform.get(name), low, high)
+    transform = transform or None
     # `FlowAccumulator` defaults to float32 on the grounds that flows usually train there.
     # This repository trains and infers under `jax_enable_x64`, so the conditioner's weights
     # are float64 and casting the context down would discard ~1e-6 of density per trial for
@@ -177,19 +223,24 @@ def create_rdm_two_accumulators_likelihood(data):
     return likelihood_fun
 
 
-def create_rdm_likelihood_factory_approx(conditioner):
+def create_rdm_likelihood_factory_approx(conditioner, context_bounds=None):
     """Factory for the neural-approximate RDM likelihood.
 
     Args:
         conditioner: Trained conditioner, conditioned on
             :data:`confrdm_jax.specs.WALD_CONTEXT_NAMES`.
+        context_bounds: Optional ``{name: (low, high)}`` training box; flow inputs are
+            clipped to it. See :func:`_flow_accumulator`. Wired from the training prior in
+            ``conf_jax/model/rdm.yaml``.
 
     Returns:
         ``create_likelihood(data) -> likelihood_fun(log_theta) -> (T,)``, with the same
         signature as :func:`create_rdm_two_accumulators_likelihood`'s result.
     """
     spec = rdm_spec()
-    accumulator = _flow_accumulator(conditioner, WALD_CONTEXT_NAMES)
+    accumulator = _flow_accumulator(
+        conditioner, WALD_CONTEXT_NAMES, context_bounds=context_bounds,
+    )
 
     def create_likelihood(data):
         design = make_design(data)
@@ -222,7 +273,9 @@ def create_rdm_hierarchical_likelihood(data, mask):
     return jax.jit(_hierarchical(one_subject, data, mask))
 
 
-def create_rdm_hierarchical_likelihood_factory_approx(conditioner, remat=True):
+def create_rdm_hierarchical_likelihood_factory_approx(
+    conditioner, remat=True, context_bounds=None,
+):
     """Factory for the hierarchical neural-approximate RDM likelihood.
 
     Args:
@@ -230,13 +283,16 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, remat=True):
         remat: Recompute the flow's forward pass during the backward pass instead of storing
             its activations. Trades time for memory, which is the binding constraint once the
             flow is evaluated for every subject of a population at once.
+        context_bounds: See :func:`create_rdm_likelihood_factory_approx`.
 
     Returns:
         ``create_likelihood(data, mask)`` returning a function with the same signature as
         :func:`create_rdm_hierarchical_likelihood`'s.
     """
     spec = rdm_spec()
-    accumulator = _flow_accumulator(conditioner, WALD_CONTEXT_NAMES, remat=remat)
+    accumulator = _flow_accumulator(
+        conditioner, WALD_CONTEXT_NAMES, remat=remat, context_bounds=context_bounds,
+    )
 
     def create_likelihood(data, mask):
         def one_subject(theta, subject_data, subject_mask):
@@ -252,7 +308,7 @@ def create_rdm_hierarchical_likelihood_factory_approx(conditioner, remat=True):
 # --------------------------------------------------------------------------------------- #
 
 
-def create_crdm_likelihood_factory_approx(conditioner, t_max=None):
+def create_crdm_likelihood_factory_approx(conditioner, t_max=None, context_bounds=None):
     """Factory for the hybrid neural/analytic CRDM likelihood.
 
     Args:
@@ -262,6 +318,9 @@ def create_crdm_likelihood_factory_approx(conditioner, t_max=None):
             then scored by the product of both accumulators' survival at ``t_max``. Wired
             from ``model.test_sampler.t_max`` in ``conf_jax/model/crdm.yaml``, so the
             likelihood's horizon and the simulator's cannot drift apart.
+        context_bounds: Optional ``{name: (low, high)}`` training box; the pulsed
+            accumulator's flow inputs are clipped to it. See :func:`_flow_accumulator`.
+            Wired from the training prior in ``conf_jax/model/crdm.yaml``.
 
     Returns:
         ``create_likelihood(data) -> likelihood_fun(log_theta) -> (T,)``. `data` is
@@ -269,7 +328,7 @@ def create_crdm_likelihood_factory_approx(conditioner, t_max=None):
         and 0 for incongruent.
     """
     spec = crdm_spec()
-    pulsed = _flow_accumulator(conditioner, CRDM_CONTEXT_NAMES)
+    pulsed = _flow_accumulator(conditioner, CRDM_CONTEXT_NAMES, context_bounds=context_bounds)
     plain = Wald()
 
     def create_likelihood(data):
@@ -283,7 +342,9 @@ def create_crdm_likelihood_factory_approx(conditioner, t_max=None):
     return create_likelihood
 
 
-def create_crdm_hierarchical_likelihood_factory_approx(conditioner, t_max=None, remat=True):
+def create_crdm_hierarchical_likelihood_factory_approx(
+    conditioner, t_max=None, remat=True, context_bounds=None,
+):
     """Factory for the hierarchical hybrid CRDM likelihood.
 
     Censoring matters more here than in the single-subject case: ``t0`` is per subject, so an
@@ -295,13 +356,18 @@ def create_crdm_hierarchical_likelihood_factory_approx(conditioner, t_max=None, 
         t_max: See :func:`create_crdm_likelihood_factory_approx`. Wired from
             ``model.hierarchical.test_sampler.t_max``.
         remat: See :func:`create_rdm_hierarchical_likelihood_factory_approx`.
+        context_bounds: See :func:`create_crdm_likelihood_factory_approx`. This is where the
+            clamp matters most: tempered SMC evaluates the likelihood at every particle drawn
+            from the prior, tails included.
 
     Returns:
         ``create_likelihood(data, mask)`` returning ``likelihood_fun(log_theta)`` over
         ``(S, 7)`` subject log-parameters, for `data` of shape ``(S, T, 3)``.
     """
     spec = crdm_spec()
-    pulsed = _flow_accumulator(conditioner, CRDM_CONTEXT_NAMES, remat=remat)
+    pulsed = _flow_accumulator(
+        conditioner, CRDM_CONTEXT_NAMES, remat=remat, context_bounds=context_bounds,
+    )
     plain = Wald()
 
     def create_likelihood(data, mask):
