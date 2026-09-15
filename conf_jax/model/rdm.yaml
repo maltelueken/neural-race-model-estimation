@@ -47,6 +47,14 @@ run_reference_recovery: true
 num_bins: 4
 num_mid: 64
 
+# Experimental (confrdm_jax.flows_affine): the conditioner also emits a per-context location
+# and scale on log decision time, so the spline models only the shape of a standardised log
+# time instead of sharing one fixed [-5, 5] window across every context. Must match the
+# checkpoint; the sidecar records it and loading refuses a mismatch. Being an override, it
+# lands in the output directory name, so affine and plain checkpoints never overwrite each
+# other.
+flow_affine: false
+
 hierarchical:
   prior_factory:
     _target_: confrdm_jax.priors.create_hierarchical_rdm_prior_lkj_mvn

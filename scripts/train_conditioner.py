@@ -28,12 +28,14 @@ from pathlib import Path
 
 import hydra
 import jax
-from eamax.flows import make_mlp_conditioner, save_conditioner, train_step
 from flax import nnx
 from hydra.utils import instantiate
 from tqdm import tqdm
 
 from confrdm_jax import configure_jax
+# Local patch over eamax.flows: identical for a plain conditioner, plus the optional
+# per-context affine stage selected by `model.flow_affine`.
+from confrdm_jax.flows_affine import make_mlp_conditioner, save_conditioner, train_step
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,7 @@ def main(cfg):
         num_in=len(context_names),
         num_bins=cfg["model"]["num_bins"],
         num_mid=cfg["model"]["num_mid"],
+        affine=cfg["model"]["flow_affine"],
         rngs=rngs,
     )
 

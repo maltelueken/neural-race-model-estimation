@@ -52,9 +52,9 @@ import jax
 import jax.numpy as jnp
 from eamax.accumulators import VolterraPulsedWald, Wald
 from eamax.design import build_params_fn
-from eamax.flows import FlowAccumulator
 from eamax.race import gather_by_mask, overlay_by_mask, race_loglik, winner_mask
 
+from .flows_affine import FlowAccumulator
 from .specs import CRDM_CONTEXT_NAMES, WALD_CONTEXT_NAMES, crdm_spec, make_design, rdm_spec
 
 __all__ = [
@@ -101,7 +101,11 @@ def _clamped(transform, low, high):
 
 
 def _flow_accumulator(conditioner, context_names, remat=False, context_bounds=None):
-    """A :class:`eamax.flows.FlowAccumulator` over `context_names`.
+    """A flow accumulator over `context_names`.
+
+    :class:`confrdm_jax.flows_affine.FlowAccumulator`, which is `eamax`'s for a plain
+    conditioner and adds the per-context affine stage for one trained with
+    ``model.flow_affine=true``; the layout is read off the conditioner's weights.
 
     ``amp`` is passed through ``abs`` because the pulse's sign selected *which* accumulator
     carried it in the old simulators rather than changing its shape, and the flow was
