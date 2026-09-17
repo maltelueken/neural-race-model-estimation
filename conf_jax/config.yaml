@@ -51,6 +51,14 @@ test_num_datasets: 100
 
 learning_rate: 5e-3
 
+# Global gradient-norm threshold for optimizer=adam_cosine_decay_clip (unused otherwise).
+# Measured on 64 x 500-trial CRDM training batches (dt = 0.5 ms): the trained 100k affine,
+# log-input, two-layer flow has a median norm of 0.97 (0.12-3.4 over 8 batches), a fresh
+# initialisation 16.7 (11-29). 5.0 sits above every trained batch measured, so normal
+# late-training steps are untouched, and engages on the early phase and on any spike. The
+# training log reports the mean and max raw norm per window, which is how to check that.
+grad_clip_norm: 5.0
+
 # Starting-position support constraint, applied by both recovery scripts through
 # eamax.inference.init.T0Support.
 #

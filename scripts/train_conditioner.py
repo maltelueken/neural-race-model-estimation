@@ -35,7 +35,13 @@ from tqdm import tqdm
 from confrdm_jax import configure_jax
 # Local patch over eamax.flows: identical for a plain conditioner, plus the optional
 # per-context affine stage selected by `model.flow_affine`.
-from confrdm_jax.flows_affine import flow_options, make_mlp_conditioner, save_conditioner, train_step
+from confrdm_jax.flows_affine import (
+    Maximum,
+    flow_options,
+    make_mlp_conditioner,
+    save_conditioner,
+    train_step,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ def main(cfg):
     # silently wrong densities.
     context_names = list(cfg["model"]["context_names"])
 
-    metrics_history = {"train_loss": []}
+    metrics_history = {"train_loss": [], "train_grad_norm": [], "train_grad_norm_max": []}
 
     train_key = jax.random.key(cfg["train_seed"])
     conditioner_key, sampling_key = jax.random.split(train_key, 2)
@@ -84,7 +90,14 @@ def main(cfg):
     )
 
     optimizer = nnx.Optimizer(conditioner, instantiate(cfg["optimizer"]), wrt=nnx.Param)
-    metrics = nnx.MultiMetric(loss=nnx.metrics.Average("loss"))
+    # The gradient norm is the raw one, before any clipping in the optimizer: its window mean
+    # says where training normally sits, its window max whether anything spiked -- which an
+    # average over 100k steps would otherwise hide.
+    metrics = nnx.MultiMetric(
+        loss=nnx.metrics.Average("loss"),
+        grad_norm=nnx.metrics.Average("grad_norm"),
+        grad_norm_max=Maximum("grad_norm"),
+    )
 
     for step in tqdm(range(train_steps)):
         data, context = sampler(rngs.sampling(), batch_shape, prior)
@@ -96,7 +109,8 @@ def main(cfg):
         # Always record the final step, so `metrics_history` is non-empty whatever
         # `train_steps` is; skip step 0, whose average is one batch.
         if step == train_steps - 1 or (step > 0 and step % eval_every == 0):
-            for metric, value in metrics.compute().items():
+            computed = metrics.compute()
+            for metric, value in computed.items():
                 metrics_history[f"train_{metric}"].append(value)
 
             # `nnx.metrics.Average` accumulates from wherever it was last reset, so without
@@ -107,7 +121,11 @@ def main(cfg):
             # schedule over ~1e6 steps, is dominated by the early high-loss phase.
             metrics.reset()
 
-            logger.info("Loss: %s", value)
+            # "Loss: <value>" stays first on the line, as downstream log parsing expects it.
+            logger.info(
+                "Loss: %s | grad norm mean %.4g max %.4g",
+                computed["loss"], computed["grad_norm"], computed["grad_norm_max"],
+            )
 
     if cfg["save"]:
         save_conditioner(

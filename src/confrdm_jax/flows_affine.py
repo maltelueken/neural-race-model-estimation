@@ -80,10 +80,12 @@ from eamax.flows import spline_flow as _eamax_spline_flow
 from eamax.flows.checkpoint import SIDECAR_NAME, read_metadata
 from eamax.flows.model import MLP, RANGE_MAX
 from flax import nnx
+import optax
 from jax.scipy import stats
 
 __all__ = [
     "MIN_SCALE",
+    "Maximum",
     "FlowAccumulator",
     "DeepMLP",
     "conditioner_layout",
@@ -422,11 +424,39 @@ def loss_fn(conditioner, data, context, t_max=None):
     return -jnp.mean(jnp.where(is_valid, log_pdf, log_sf))
 
 
+class Maximum(nnx.metrics.Metric):
+    """Running maximum of one keyword argument, for `nnx.MultiMetric`.
+
+    `nnx.metrics.Average` hides a single spike inside a 100k-step window; the maximum does
+    not, and a spike is exactly what gradient clipping is meant to catch.
+    """
+
+    def __init__(self, argname: str = "values"):
+        self.argname = argname
+        self.value = nnx.metrics.MetricState(jnp.array(-jnp.inf, dtype=jnp.float32))
+
+    def reset(self) -> None:
+        self.value[...] = jnp.array(-jnp.inf, dtype=jnp.float32)
+
+    def update(self, **kwargs) -> None:
+        if self.argname not in kwargs:
+            raise TypeError(f"Expected keyword argument '{self.argname}'")
+        self.value[...] = jnp.maximum(self.value[...], jnp.max(jnp.asarray(kwargs[self.argname])))
+
+    def compute(self):
+        return self.value[...]
+
+
 @nnx.jit(static_argnames="t_max")
 def train_step(conditioner, optimizer, metrics, data, context, t_max=None):
-    """`eamax.flows.train_step` over :func:`loss_fn`."""
+    """`eamax.flows.train_step` over :func:`loss_fn`.
+
+    Also passes the *raw* global gradient norm to `metrics` as ``grad_norm`` -- before any
+    clipping the optimizer applies -- so the log shows how often a clip threshold engages.
+    Metrics that do not read it ignore it.
+    """
     loss, grads = nnx.value_and_grad(loss_fn)(conditioner, data, context, t_max)
-    metrics.update(loss=loss)
+    metrics.update(loss=loss, grad_norm=optax.global_norm(grads))
     optimizer.update(conditioner, grads)
 
 

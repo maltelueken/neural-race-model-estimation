@@ -1,0 +1,19 @@
+# adam_cosine_decay with the gradient's global norm clipped to `grad_clip_norm` first.
+#
+# Guards against a single bad batch knocking the weights into a high-loss state: a 1M-step
+# run of the affine, log-input, two-hidden-layer CRDM flow logged a windowed mean loss of ~1100
+# against ~-1.15 for the same flow at 100k steps. Under the cosine schedule a 1M run holds the
+# learning rate near its 5e-3 peak for ~200k steps, where the 100k run has already halved it.
+# Clipping bounds how far one batch can move AdamW's moment estimates and weights.
+#
+# `grad_clip_norm` lives in conf_jax/config.yaml, where the measurement behind its value is.
+_target_: optax.chain
+_args_:
+  - _target_: optax.clip_by_global_norm
+    max_norm: ${grad_clip_norm}
+  - _target_: optax.adamw
+    learning_rate:
+      _target_: optax.schedules.cosine_decay_schedule
+      init_value: ${learning_rate}
+      decay_steps: ${train_steps}
+      alpha: 1e-6
