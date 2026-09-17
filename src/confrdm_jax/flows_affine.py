@@ -30,9 +30,36 @@ reading the first ``2K`` entries as bin widths and heights still does. The two w
 coincide (they differ mod 3), so the layout is read off the weights, and a checkpoint
 cannot be evaluated with the wrong one. ``scale = softplus(raw + c) + MIN_SCALE`` with ``c``
 chosen so ``raw = 0`` gives exactly 1: zeroed affine outputs reproduce the plain flow.
+
+**Spline settings (affine only).** `eamax` fixes the spline to ``[-5, 5]`` with slope 1 at
+both ends (``boundary_slopes="identity"``). Both corners are pinned, and a skewed
+decision-time distribution cannot meet them with one shift and scale, so the trained
+conditioners spend ~8 of 12 bins bending into the tails. An affine flow may instead use a
+narrower ``spline_range`` and ``boundary_slopes="unconstrained"``: the range is then
+relative to each context, and beyond it the tails continue linearly in the standardised
+coordinate with *learned* slopes, so lower and upper tails can differ. For a plain flow the
+range is absolute log time, where narrowing it forbids fast decision times, so it is refused.
+The settings are plain attributes on the conditioner (part of its graph, not its weights),
+recorded in the sidecar and checked on load: the same weights under a different range are a
+different density.
+
+**Log-scaled inputs (affine only).** The conditioner can see each input as
+``u = (log(x + eps) - loc) / scale`` instead of ``x``. The diffusion's two exact symmetries
+are multiplicative on the raw scale -- rescaling time maps ``(v, amp, tau, s, b)`` to
+``(c v, amp, tau / c, sqrt(c) s, b)`` and divides decision times by ``c``; rescaling space
+maps it to ``(a v, a amp, tau, a s, a b)`` and changes nothing -- and both become shifts in
+log space, where the affine stage's location is linear along them. A log scale also spaces
+tau's relative changes evenly, which is where the trained flows are weakest. ``eps`` keeps
+zero inputs finite (``amp = 0`` is a plain Wald); ``loc`` and ``scale`` are the mean and SD of
+``log(x + eps)`` under the uniform training box, in closed form, so they are fixed by the
+config rather than learned. The transform is applied in :func:`_conditioner_outputs`, the one
+place every context meets the network -- the training loss and the likelihood both -- and,
+like the spline settings, it is stored on the conditioner, recorded in the sidecar and checked
+on load.
 """
 
 import json
+import math
 from pathlib import Path
 
 import distrax
@@ -44,7 +71,7 @@ from eamax.flows import make_mlp_conditioner as _eamax_make_mlp_conditioner
 from eamax.flows import save_conditioner as _eamax_save_conditioner
 from eamax.flows import spline_flow as _eamax_spline_flow
 from eamax.flows.checkpoint import SIDECAR_NAME, read_metadata
-from eamax.flows.model import MLP, RANGE_MAX, RANGE_MIN
+from eamax.flows.model import MLP, RANGE_MAX
 from flax import nnx
 from jax.scipy import stats
 
@@ -53,13 +80,23 @@ __all__ = [
     "FlowAccumulator",
     "conditioner_layout",
     "evaluate_pdf_sf",
+    "flow_options",
+    "input_scaling",
     "load_conditioner",
+    "log_input_scaling",
     "loss_fn",
     "make_mlp_conditioner",
     "save_conditioner",
     "spline_flow",
+    "spline_knots",
+    "spline_settings",
     "train_step",
 ]
+
+#: `eamax`'s spline settings, and the defaults here.
+DEFAULT_SPLINE_RANGE = RANGE_MAX
+DEFAULT_BOUNDARY_SLOPES = "identity"
+_BOUNDARY_SLOPES = ("identity", "unconstrained", "lower_identity", "upper_identity")
 
 #: Floor on the per-context scale, so the affine stage can never collapse to a point mass.
 MIN_SCALE = 1e-3
@@ -68,7 +105,11 @@ MIN_SCALE = 1e-3
 _SCALE_OFFSET = float(jnp.log(jnp.expm1(1.0 - MIN_SCALE)))
 
 
-def make_mlp_conditioner(rngs, num_in, num_mid=64, num_bins=4, affine=False):
+def make_mlp_conditioner(
+    rngs, num_in, num_mid=64, num_bins=4, affine=False,
+    spline_range=DEFAULT_SPLINE_RANGE, boundary_slopes=DEFAULT_BOUNDARY_SLOPES,
+    input_scaling=None,
+):
     """`eamax.flows.make_mlp_conditioner`, optionally with the two affine outputs.
 
     Parameters
@@ -79,14 +120,147 @@ def make_mlp_conditioner(rngs, num_in, num_mid=64, num_bins=4, affine=False):
     affine : bool, optional
         Append a per-context ``loc`` and raw ``scale`` on log decision time. ``False``
         returns exactly the `eamax` conditioner.
+    spline_range : float, optional
+        The spline is active on ``[-spline_range, spline_range]``. Affine only.
+    boundary_slopes : str, optional
+        `distrax` boundary condition; ``"unconstrained"`` learns both end slopes. Affine only.
+    input_scaling : dict, optional
+        ``{"eps", "loc", "scale"}``, each a length-``num_in`` sequence in context order, as
+        returned by :func:`log_input_scaling`. Affine only.
 
     Returns
     -------
     eamax.flows.MLP
     """
+    spline_range = float(spline_range)
+    boundary_slopes = str(boundary_slopes)
+    if boundary_slopes not in _BOUNDARY_SLOPES:
+        raise ValueError(f"boundary_slopes must be one of {_BOUNDARY_SLOPES}, got {boundary_slopes!r}.")
+    if not spline_range > 0.0:
+        raise ValueError(f"spline_range must be positive, got {spline_range}.")
     if not affine:
+        if (spline_range, boundary_slopes) != (DEFAULT_SPLINE_RANGE, DEFAULT_BOUNDARY_SLOPES):
+            raise ValueError(
+                "spline_range and boundary_slopes can only be changed for an affine flow: without "
+                "the per-context location and scale the range is absolute log time, and "
+                "narrowing it forbids fast decision times."
+            )
+        if input_scaling is not None:
+            raise ValueError(
+                "Log-scaled inputs are only implemented for an affine flow (model.flow_affine=true)."
+            )
         return _eamax_make_mlp_conditioner(rngs, num_in=num_in, num_mid=num_mid, num_bins=num_bins)
-    return MLP(din=num_in, dmid=num_mid, dout=3 * num_bins + 3, rngs=rngs)
+    conditioner = MLP(din=num_in, dmid=num_mid, dout=3 * num_bins + 3, rngs=rngs)
+    conditioner.spline_range = spline_range
+    conditioner.boundary_slopes = boundary_slopes
+    if input_scaling is not None:
+        columns = {key: tuple(float(x) for x in input_scaling[key]) for key in ("eps", "loc", "scale")}
+        if any(len(column) != num_in for column in columns.values()):
+            raise ValueError(f"input_scaling needs {num_in} entries per key, got {columns}.")
+        if not all(sd > 0.0 for sd in columns["scale"]):
+            raise ValueError(f"input_scaling scales must be positive, got {columns['scale']}.")
+        conditioner.input_log_eps = columns["eps"]
+        conditioner.input_loc = columns["loc"]
+        conditioner.input_scale = columns["scale"]
+    return conditioner
+
+
+def input_scaling(conditioner):
+    """The conditioner's log-input scaling as ``{"eps", "loc", "scale"}`` tuples, or ``None``."""
+    if getattr(conditioner, "input_log_eps", None) is None:
+        return None
+    return {
+        "eps": tuple(conditioner.input_log_eps),
+        "loc": tuple(conditioner.input_loc),
+        "scale": tuple(conditioner.input_scale),
+    }
+
+
+def _log_uniform_moments(low, high, eps):
+    """Mean and SD of ``log(x + eps)`` for ``x ~ Uniform(low, high)``, in closed form.
+
+    With ``y = x + eps`` uniform on ``[a, b]``: ``E[log y] = [F]_a^b / (b - a)`` with
+    ``F(y) = y log y - y``, and ``E[log^2 y] = [G]_a^b / (b - a)`` with
+    ``G(y) = y (log^2 y - 2 log y + 2)``.
+    """
+    a, b = low + eps, high + eps
+    if not (a > 0.0 and b > a):
+        raise ValueError(f"log input scaling needs 0 < low + eps < high + eps, got low={low}, high={high}, eps={eps}.")
+    F = lambda y: y * math.log(y) - y  # noqa: E731
+    G = lambda y: y * (math.log(y) ** 2 - 2.0 * math.log(y) + 2.0)  # noqa: E731
+    mean = (F(b) - F(a)) / (b - a)
+    var = (G(b) - G(a)) / (b - a) - mean**2
+    return mean, math.sqrt(max(var, 0.0))
+
+
+def log_input_scaling(context_names, eps, bounds):
+    """Fixed log-input scaling for a conditioner trained on a uniform box.
+
+    Parameters
+    ----------
+    context_names : sequence of str
+        The flow's inputs, in training order.
+    eps : mapping of str to float
+        Offset added before the log, per input. Must name exactly ``context_names``.
+    bounds : mapping of str to (low, high)
+        The uniform training box per input -- ``model.flow_context_bounds``.
+
+    Returns
+    -------
+    dict
+        ``{"eps", "loc", "scale"}``, tuples in ``context_names`` order.
+    """
+    names = [str(name) for name in context_names]
+    eps = {str(k): float(v) for k, v in eps.items()}
+    if set(eps) != set(names):
+        raise ValueError(f"flow_input_log_eps must name exactly {names}, got {sorted(eps)}.")
+    columns = {"eps": [], "loc": [], "scale": []}
+    for name in names:
+        low, high = (float(limit) for limit in bounds[name])
+        mean, sd = _log_uniform_moments(low, high, eps[name])
+        columns["eps"].append(eps[name]); columns["loc"].append(mean); columns["scale"].append(sd)
+    return {key: tuple(value) for key, value in columns.items()}
+
+
+def flow_options(model_cfg):
+    """The conditioner keyword arguments a model config selects, for the scripts.
+
+    One place for the ``flow_*`` keys, so training and both recovery scripts build the same
+    conditioner template from the same config.
+    """
+    options = {
+        "affine": bool(model_cfg["flow_affine"]),
+        "spline_range": float(model_cfg["flow_spline_range"]),
+        "boundary_slopes": str(model_cfg["flow_boundary_slopes"]),
+        "input_scaling": None,
+    }
+    if bool(model_cfg["flow_log_inputs"]):
+        options["input_scaling"] = log_input_scaling(
+            model_cfg["context_names"], model_cfg["flow_input_log_eps"], model_cfg["flow_context_bounds"],
+        )
+    return options
+
+
+def _conditioner_outputs(conditioner, context):
+    """The conditioner applied to `context`, through its log-input scaling if it has one.
+
+    Every path from a context to spline parameters goes through here, so training and
+    inference cannot see differently scaled inputs.
+    """
+    scaling = input_scaling(conditioner)
+    if scaling is None:
+        return conditioner(context)
+    context = jnp.asarray(context)
+    eps, loc, scale = (jnp.asarray(scaling[key], dtype=context.dtype) for key in ("eps", "loc", "scale"))
+    return conditioner((jnp.log(context + eps) - loc) / scale)
+
+
+def spline_settings(conditioner):
+    """``(spline_range, boundary_slopes)`` of a conditioner; `eamax`'s for one without them."""
+    return (
+        float(getattr(conditioner, "spline_range", DEFAULT_SPLINE_RANGE)),
+        str(getattr(conditioner, "boundary_slopes", DEFAULT_BOUNDARY_SLOPES)),
+    )
 
 
 def _layout_from_width(width):
@@ -115,31 +289,69 @@ def _exponential():
     )
 
 
+def _spline(spline_params, spline_range=DEFAULT_SPLINE_RANGE, boundary_slopes=DEFAULT_BOUNDARY_SLOPES):
+    """The rational-quadratic spline; with the defaults, exactly as `eamax.flows.spline_flow`."""
+    return distrax.RationalQuadraticSpline(
+        spline_params,
+        range_min=-spline_range,
+        range_max=spline_range,
+        boundary_slopes=boundary_slopes,
+        min_bin_size=1e-4,
+    )
+
+
+def _loc_scale(params):
+    return params[..., -2], jax.nn.softplus(params[..., -1] + _SCALE_OFFSET) + MIN_SCALE
+
+
 def spline_flow(data, context, conditioner):
     """`eamax.flows.spline_flow`, with the affine stage when the conditioner has one.
 
     A plain conditioner is handed straight to `eamax`, so its densities are bit-identical
     to what they were before this module existed.
     """
-    params = conditioner(context)
+    params = _conditioner_outputs(conditioner, context)
     num_bins, affine = _layout_from_width(params.shape[-1])
     if not affine:
         return _eamax_spline_flow(data, context, conditioner)
 
-    spline = distrax.RationalQuadraticSpline(
-        params[..., : 3 * num_bins + 1],
-        range_min=RANGE_MIN,
-        range_max=RANGE_MAX,
-        boundary_slopes="identity",
-        min_bin_size=1e-4,
-    )
-    loc = params[..., -2]
-    scale = jax.nn.softplus(params[..., -1] + _SCALE_OFFSET) + MIN_SCALE
+    spline = _spline(params[..., : 3 * num_bins + 1], *spline_settings(conditioner))
+    loc, scale = _loc_scale(params)
     flow = distrax.Transformed(
         distrax.Normal(loc=0.0, scale=1.0),
         distrax.Chain([_exponential(), distrax.ScalarAffine(shift=loc, scale=scale), spline]),
     )
     return flow.log_prob(data), flow
+
+
+def spline_knots(conditioner, context):
+    """The spline's knots for one context: base ``z`` and the log decision time they map to.
+
+    For figures. The knots are where the transform's curvature, and so the density's slope,
+    can jump. A plain flow maps ``z`` knots to ``log t = y`` knots directly; an affine flow
+    to ``log t = loc + scale * y``, so its knots move with the context rather than sitting
+    at fixed log times. Bin sizes include the spline's ``min_bin_size``, as `distrax` builds
+    them.
+
+    Parameters
+    ----------
+    conditioner : eamax.flows.MLP
+    context : array
+        Shape ``(num_in,)``.
+
+    Returns
+    -------
+    z_knots, log_t_knots : array
+        Shape ``(num_bins + 1,)`` each.
+    """
+    params = _conditioner_outputs(conditioner, jnp.asarray(context))
+    num_bins, affine = _layout_from_width(params.shape[-1])
+    spline = _spline(params[..., : 3 * num_bins + 1], *spline_settings(conditioner))
+    log_t = spline.y_pos
+    if affine:
+        loc, scale = _loc_scale(params)
+        log_t = loc + scale * log_t
+    return spline.x_pos, log_t
 
 
 def evaluate_pdf_sf(conditioner, data, context):
@@ -197,14 +409,28 @@ def save_conditioner(conditioner, path, step=0, context_names=None, num_mid=None
     metadata = read_metadata(path)
     if metadata is not None:
         metadata["affine"] = conditioner_layout(conditioner)[1]
+        metadata["spline_range"], metadata["boundary_slopes"] = spline_settings(conditioner)
+        scaling = input_scaling(conditioner)
+        metadata["input_scaling"] = None if scaling is None else {k: list(v) for k, v in scaling.items()}
         (Path(path) / SIDECAR_NAME).write_text(json.dumps(metadata, indent=2))
 
 
-def load_conditioner(conditioner, path, step=0, context_names=None):
-    """`eamax.flows.load_conditioner`, refusing a template with the wrong layout.
+def _same_scaling(recorded, expected):
+    if recorded is None or expected is None:
+        return recorded is None and expected is None
+    return all(
+        len(recorded[key]) == len(expected[key])
+        and all(math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-15) for a, b in zip(recorded[key], expected[key], strict=True))
+        for key in ("eps", "loc", "scale")
+    )
 
-    Orbax would fail on the shape mismatch anyway, but with an error that says nothing about
-    ``model.flow_affine``. A sidecar without the flag predates this module and is plain.
+
+def load_conditioner(conditioner, path, step=0, context_names=None):
+    """`eamax.flows.load_conditioner`, refusing a template with the wrong layout or spline.
+
+    Orbax would fail on an affine mismatch anyway, but with an error that says nothing about
+    ``model.flow_affine``; a spline-setting mismatch it would not catch at all. A sidecar
+    without these keys predates this module and is plain `eamax`.
     """
     metadata = read_metadata(path)
     if metadata is not None:
@@ -214,5 +440,24 @@ def load_conditioner(conditioner, path, step=0, context_names=None):
             raise ValueError(
                 f"Checkpoint at {path} was trained with affine={recorded}, but the conditioner "
                 f"it is being loaded into has affine={expected}. Set model.flow_affine to match."
+            )
+        recorded_settings = (
+            float(metadata.get("spline_range", DEFAULT_SPLINE_RANGE)),
+            str(metadata.get("boundary_slopes", DEFAULT_BOUNDARY_SLOPES)),
+        )
+        if recorded_settings != spline_settings(conditioner):
+            raise ValueError(
+                f"Checkpoint at {path} was trained with (spline_range, boundary_slopes) = "
+                f"{recorded_settings}, but the conditioner it is being loaded into has "
+                f"{spline_settings(conditioner)}. Set model.flow_spline_range and "
+                "model.flow_boundary_slopes to match."
+            )
+        recorded_scaling = metadata.get("input_scaling")
+        expected_scaling = input_scaling(conditioner)
+        if not _same_scaling(recorded_scaling, expected_scaling):
+            raise ValueError(
+                f"Checkpoint at {path} was trained with input_scaling={recorded_scaling}, but the "
+                f"conditioner it is being loaded into has {expected_scaling}. Set "
+                "model.flow_log_inputs (and model.flow_input_log_eps, and the training box) to match."
             )
     return _eamax_load_conditioner(conditioner, path, step=step, context_names=context_names)

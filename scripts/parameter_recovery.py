@@ -51,7 +51,7 @@ from flax import nnx
 from hydra.utils import instantiate
 
 from confrdm_jax import configure_jax
-from confrdm_jax.flows_affine import load_conditioner, make_mlp_conditioner
+from confrdm_jax.flows_affine import flow_options, load_conditioner, make_mlp_conditioner
 from confrdm_jax.priors import log_prior_fn
 from confrdm_jax.specs import DATA_COL_NAMES, spec_for
 
@@ -195,7 +195,7 @@ def main(cfg):
         num_in=len(context_names),
         num_bins=model_cfg["num_bins"],
         num_mid=model_cfg["num_mid"],
-        affine=model_cfg["flow_affine"],
+        **flow_options(model_cfg),
         rngs=nnx.Rngs(default=conditioner_key),
     )
 

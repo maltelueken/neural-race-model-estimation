@@ -53,6 +53,19 @@ num_mid: 64
 # lands in the output directory name, so affine and plain checkpoints never overwrite each
 # other.
 flow_affine: false
+# Spline settings for an affine flow only (see confrdm_jax.flows_affine): the active range in
+# the standardised coordinate and the distrax boundary condition. The defaults are eamax's.
+# "unconstrained" learns both end slopes, so the tails beyond the range need not be pinned to
+# slope 1; a narrower range then stops bins being spent bending into the corners.
+flow_spline_range: 5.0
+flow_boundary_slopes: identity
+# Log-scaled conditioner inputs, affine flow only (see confrdm_jax.flows_affine): each input
+# enters the network as (log(x + eps) - loc) / scale, with loc and scale the mean and SD of
+# log(x + eps) over the training box -- computed from flow_context_bounds, so they follow the
+# box. eps keeps zero inputs finite and sits well below the prior's mass. Must match the
+# checkpoint; recorded in the sidecar and checked on load. Enable with model.flow_log_inputs=true.
+flow_log_inputs: false
+flow_input_log_eps: {v: 0.05, amp: 0.01, tau: 0.005, s: 0.05, b: 0.05}
 
 hierarchical:
   prior_factory:

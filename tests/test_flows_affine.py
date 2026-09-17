@@ -25,6 +25,11 @@ from confrdm_jax.flows_affine import (
     make_mlp_conditioner,
     save_conditioner,
     spline_flow,
+    spline_knots,
+    spline_settings,
+    input_scaling,
+    log_input_scaling,
+    flow_options,
 )
 from confrdm_jax.likelihoods import create_crdm_hierarchical_likelihood_factory_approx
 from confrdm_jax.simulators import simulate_crdm
@@ -187,3 +192,271 @@ def test_a_pre_patch_sidecar_loads_as_plain(tmp_path):
         np.asarray(evaluate_pdf_sf(restored, TIMES, CONTEXT)[0]),
         np.asarray(eamax_evaluate_pdf_sf(reference, TIMES, CONTEXT)[0]),
     )
+
+
+@pytest.mark.parametrize("layout", ["plain", "affine"])
+def test_knots_lie_on_the_flow_transform(layout):
+    # A knot maps to a knot, so pushing the z knots through the full flow bijector must land
+    # exactly on the reported log-time knots — for either layout.
+    plain, affine = _pair()
+    conditioner = plain if layout == "plain" else affine
+    _set_affine_outputs(affine, loc=-1.2, raw_scale=-0.4)
+    context = jnp.array([2.0, 1.0, 1.0])
+
+    z_knots, log_t_knots = spline_knots(conditioner, context)
+    _, flow = spline_flow(jnp.ones(()), context, conditioner)
+    assert z_knots.shape == log_t_knots.shape == (NUM_BINS + 1,)
+    np.testing.assert_allclose(
+        np.log(np.asarray(flow.bijector.forward(z_knots))), np.asarray(log_t_knots), atol=1e-10,
+    )
+
+
+def _narrow_pair():
+    """A default affine conditioner and a narrow/unconstrained one sharing all weights."""
+    _, default = _pair()
+    narrow = make_mlp_conditioner(
+        nnx.Rngs(1), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True,
+        spline_range=3.5, boundary_slopes="unconstrained",
+    )
+    nnx.update(narrow, nnx.state(default))
+    return default, narrow
+
+
+def test_spline_settings_are_refused_for_a_plain_flow():
+    # Without the affine stage the range is absolute log time; narrowing it forbids fast
+    # decision times, which is the t0 bias the eamax comment warns about.
+    with pytest.raises(ValueError, match="only be changed for an affine flow"):
+        make_mlp_conditioner(nnx.Rngs(0), num_in=3, num_bins=NUM_BINS, spline_range=3.5)
+    with pytest.raises(ValueError, match="boundary_slopes must be one of"):
+        make_mlp_conditioner(nnx.Rngs(0), num_in=3, num_bins=NUM_BINS, affine=True, boundary_slopes="nope")
+
+
+def test_the_spline_settings_change_the_density():
+    default, narrow = _narrow_pair()
+    _set_affine_outputs(default, loc=-1.0, raw_scale=-0.3)
+    _set_affine_outputs(narrow, loc=-1.0, raw_scale=-0.3)
+    assert spline_settings(default) == (5.0, "identity")
+    assert spline_settings(narrow) == (3.5, "unconstrained")
+    assert not np.allclose(
+        np.asarray(evaluate_pdf_sf(default, TIMES, CONTEXT)[0]),
+        np.asarray(evaluate_pdf_sf(narrow, TIMES, CONTEXT)[0]),
+    )
+
+
+def test_survival_is_exact_with_unconstrained_boundary_slopes():
+    # Beyond the range the spline now extrapolates with learned slopes; it must still be
+    # strictly increasing, so S(t) is still the base survival at the inverse.
+    _, narrow = _narrow_pair()
+    _set_affine_outputs(narrow, loc=-1.0, raw_scale=-0.5)
+    # Push the boundary slopes away from 1 so the extrapolation actually differs.
+    width = 3 * NUM_BINS + 1
+    narrow.linear2.bias.value = narrow.linear2.bias.value.at[2 * NUM_BINS].set(1.5).at[width - 1].set(-1.5)
+    context = jnp.array([2.0, 1.0, 1.0])
+
+    grid = jnp.linspace(1e-6, 30.0, 600_000)
+    log_pdf, _ = spline_flow(grid, context, narrow)
+    cumulative = jnp.cumsum(jnp.exp(log_pdf)) * (grid[1] - grid[0])
+    assert float(cumulative[-1]) == pytest.approx(1.0, abs=3e-3)
+    for target in (0.1, 0.4, 1.0):
+        index = int(jnp.searchsorted(grid, target))
+        reported = float(jnp.exp(evaluate_pdf_sf(narrow, grid[index : index + 1], context)[1][0]))
+        assert reported == pytest.approx(1.0 - float(cumulative[index]), abs=3e-3)
+
+    z_knots, log_t_knots = spline_knots(narrow, context)
+    assert float(z_knots[0]) == pytest.approx(-3.5) and float(z_knots[-1]) == pytest.approx(3.5)
+    _, flow = spline_flow(jnp.ones(()), context, narrow)
+    np.testing.assert_allclose(
+        np.log(np.asarray(flow.bijector.forward(z_knots))), np.asarray(log_t_knots), atol=1e-10,
+    )
+
+
+def test_spline_settings_round_trip_and_mismatches_are_refused(tmp_path):
+    default, narrow = _narrow_pair()
+    path = tmp_path / "conditioner"
+    save_conditioner(narrow, str(path), context_names=("v", "s", "b"))
+
+    from eamax.flows.checkpoint import read_metadata
+
+    metadata = read_metadata(str(path))
+    assert (metadata["spline_range"], metadata["boundary_slopes"]) == (3.5, "unconstrained")
+
+    template = make_mlp_conditioner(
+        nnx.Rngs(4), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True,
+        spline_range=3.5, boundary_slopes="unconstrained",
+    )
+    restored = load_conditioner(template, str(path), context_names=("v", "s", "b"))
+    assert spline_settings(restored) == (3.5, "unconstrained")
+    np.testing.assert_allclose(
+        np.asarray(evaluate_pdf_sf(narrow, TIMES, CONTEXT)[0]),
+        np.asarray(evaluate_pdf_sf(restored, TIMES, CONTEXT)[0]),
+        rtol=1e-6,
+    )
+
+    wrong = make_mlp_conditioner(nnx.Rngs(4), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True)
+    with pytest.raises(ValueError, match="flow_spline_range"):
+        load_conditioner(wrong, str(path), context_names=("v", "s", "b"))
+
+
+CRDM_NAMES = ("v", "amp", "tau", "s", "b")
+CRDM_BOX = {"v": (0.0, 8.0), "amp": (0.0, 1.0), "tau": (0.0, 0.5), "s": (0.0, 3.0), "b": (0.0, 3.0)}
+CRDM_EPS = {"v": 0.05, "amp": 0.01, "tau": 0.005, "s": 0.05, "b": 0.05}
+
+
+def _scaled_pair(num_in=5, names=CRDM_NAMES, box=CRDM_BOX, eps=CRDM_EPS):
+    """An affine conditioner and the same weights with log-scaled inputs."""
+    raw = make_mlp_conditioner(nnx.Rngs(3), num_in=num_in, num_mid=16, num_bins=NUM_BINS, affine=True)
+    scaling = log_input_scaling(names, eps, box)
+    scaled = make_mlp_conditioner(
+        nnx.Rngs(7), num_in=num_in, num_mid=16, num_bins=NUM_BINS, affine=True, input_scaling=scaling,
+    )
+    nnx.update(scaled, nnx.state(raw))
+    return raw, scaled, scaling
+
+
+def test_log_uniform_moments_match_numerical_integration():
+    # loc and scale are closed-form moments of log(x + eps) under the uniform box; check them
+    # against brute-force quadrature so a sign slip in the antiderivatives cannot hide.
+    for low, high, eps in [(0.0, 0.5, 0.005), (0.0, 8.0, 0.05), (0.25, 3.0, 0.0)]:
+        x = np.linspace(low, high, 2_000_001)
+        y = np.log(x + eps)
+        mean, sd = flows_affine._log_uniform_moments(low, high, eps)
+        assert mean == pytest.approx(np.trapezoid(y, x) / (high - low), abs=1e-5)
+        assert sd == pytest.approx(np.sqrt(np.trapezoid((y - mean) ** 2, x) / (high - low)), abs=1e-5)
+
+
+def test_log_input_scaling_is_ordered_by_context_and_validated():
+    scaling = log_input_scaling(CRDM_NAMES, CRDM_EPS, CRDM_BOX)
+    assert scaling["eps"] == tuple(CRDM_EPS[n] for n in CRDM_NAMES)
+    assert scaling["loc"][2] == pytest.approx(flows_affine._log_uniform_moments(0.0, 0.5, 0.005)[0])
+    with pytest.raises(ValueError, match="must name exactly"):
+        log_input_scaling(CRDM_NAMES, {**CRDM_EPS, "t0": 0.1}, CRDM_BOX)
+    with pytest.raises(ValueError, match="0 < low \\+ eps"):
+        log_input_scaling(CRDM_NAMES, {**CRDM_EPS, "tau": 0.0}, CRDM_BOX)
+
+
+def test_log_inputs_are_refused_for_a_plain_flow():
+    with pytest.raises(ValueError, match="only implemented for an affine flow"):
+        make_mlp_conditioner(
+            nnx.Rngs(0), num_in=5, num_bins=NUM_BINS,
+            input_scaling=log_input_scaling(CRDM_NAMES, CRDM_EPS, CRDM_BOX),
+        )
+
+
+def test_scaling_off_leaves_the_flow_unchanged():
+    raw, _, _ = _scaled_pair()
+    assert input_scaling(raw) is None
+    context = jnp.array([[4.0, 0.3, 0.1, 0.8, 0.9]])
+    np.testing.assert_array_equal(
+        np.asarray(flows_affine._conditioner_outputs(raw, context)), np.asarray(raw(context))
+    )
+
+
+def test_scaled_flow_is_the_raw_flow_on_transformed_inputs():
+    # The only thing scaling may change is what the network sees: the scaled conditioner on x
+    # must be exactly the unscaled one on (log(x + eps) - loc) / scale.
+    raw, scaled, scaling = _scaled_pair()
+    context = jnp.array([[[4.0, 0.3, 0.1, 0.8, 0.9]], [[1.2, 0.0, 0.05, 1.0, 1.4]]])
+    times = jnp.tile(jnp.linspace(0.03, 1.5, 30), (2, 1))
+    transformed = (
+        jnp.log(context + jnp.asarray(scaling["eps"])) - jnp.asarray(scaling["loc"])
+    ) / jnp.asarray(scaling["scale"])
+    for a, b in zip(
+        evaluate_pdf_sf(scaled, times, context), evaluate_pdf_sf(raw, times, transformed), strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-12, atol=1e-12)
+
+
+def test_zero_amp_and_tau_stay_finite_through_the_clamp():
+    # amp = 0 is a plain Wald and tau -> 0 is the edge of the box; with the clamp at 0 and eps
+    # inside the log, both must give finite densities and gradients.
+    _, scaled, _ = _scaled_pair()
+    from confrdm_jax.likelihoods import _flow_accumulator
+
+    accumulator = _flow_accumulator(scaled, CRDM_NAMES, context_bounds=CRDM_BOX)
+    t = jnp.linspace(0.05, 1.0, 20)
+
+    def total(values):
+        params = {name: jnp.full(t.shape, values[i]) for i, name in enumerate(CRDM_NAMES)}
+        log_pdf, log_sf = accumulator.log_pdf_sf(t, params)
+        return jnp.sum(log_pdf) + jnp.sum(log_sf)
+
+    for values in (jnp.array([4.0, 0.0, 0.0, 0.8, 0.9]), jnp.array([4.0, -0.2, -0.1, 0.8, 0.9])):
+        value, grad = jax.value_and_grad(total)(values)
+        assert np.isfinite(float(value))
+        assert np.all(np.isfinite(np.asarray(grad)))
+
+
+def test_knots_lie_on_the_scaled_flow_transform():
+    _, scaled, _ = _scaled_pair()
+    _set_affine_outputs(scaled, loc=-1.2, raw_scale=-0.4)
+    context = jnp.array([4.0, 0.3, 0.1, 0.8, 0.9])
+    z_knots, log_t_knots = spline_knots(scaled, context)
+    _, flow = spline_flow(jnp.ones(()), context, scaled)
+    np.testing.assert_allclose(
+        np.log(np.asarray(flow.bijector.forward(z_knots))), np.asarray(log_t_knots), atol=1e-10,
+    )
+
+
+def test_scaling_round_trips_and_mismatches_are_refused(tmp_path):
+    raw, scaled, scaling = _scaled_pair()
+    names = list(CRDM_NAMES)
+    scaled_path, raw_path = tmp_path / "scaled", tmp_path / "raw"
+    save_conditioner(scaled, str(scaled_path), context_names=names)
+    save_conditioner(raw, str(raw_path), context_names=names)
+
+    from eamax.flows.checkpoint import read_metadata
+
+    assert read_metadata(str(scaled_path))["input_scaling"]["loc"] == list(scaling["loc"])
+    assert read_metadata(str(raw_path))["input_scaling"] is None
+
+    def template(with_scaling):
+        return make_mlp_conditioner(
+            nnx.Rngs(11), num_in=5, num_mid=16, num_bins=NUM_BINS, affine=True,
+            input_scaling=scaling if with_scaling else None,
+        )
+
+    restored = load_conditioner(template(True), str(scaled_path), context_names=names)
+    assert input_scaling(restored) == scaling
+    context = jnp.array([[[4.0, 0.3, 0.1, 0.8, 0.9]]])
+    times = jnp.linspace(0.05, 1.0, 10)[None]
+    np.testing.assert_allclose(
+        np.asarray(evaluate_pdf_sf(scaled, times, context)[0]),
+        np.asarray(evaluate_pdf_sf(restored, times, context)[0]),
+        rtol=1e-6,
+    )
+
+    with pytest.raises(ValueError, match="flow_log_inputs"):
+        load_conditioner(template(False), str(scaled_path), context_names=names)
+    with pytest.raises(ValueError, match="flow_log_inputs"):
+        load_conditioner(template(True), str(raw_path), context_names=names)
+    shifted = {**scaling, "loc": tuple(x + 0.1 for x in scaling["loc"])}
+    wrong_box = make_mlp_conditioner(
+        nnx.Rngs(11), num_in=5, num_mid=16, num_bins=NUM_BINS, affine=True, input_scaling=shifted,
+    )
+    with pytest.raises(ValueError, match="flow_log_inputs"):
+        load_conditioner(wrong_box, str(scaled_path), context_names=names)
+
+
+@pytest.mark.parametrize("model", ["rdm", "crdm"])
+def test_config_log_inputs_follow_the_training_box(model):
+    from pathlib import Path
+
+    from hydra import compose, initialize_config_dir
+
+    config_dir = str(Path(__file__).parents[1] / "conf_jax")
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        off = compose("config", overrides=[f"model={model}"])
+        on = compose("config", overrides=[
+            f"model={model}", "model.flow_affine=true", "model.flow_log_inputs=true",
+            "model.training_prior.b_max=2.5",
+        ])
+
+    assert flow_options(off.model)["input_scaling"] is None
+    options = flow_options(on.model)
+    names = list(on.model.context_names)
+    b = names.index("b")
+    expected = flows_affine._log_uniform_moments(0.0, 2.5, float(on.model.flow_input_log_eps["b"]))
+    assert options["input_scaling"]["loc"][b] == pytest.approx(expected[0])
+    assert options["input_scaling"]["scale"][b] == pytest.approx(expected[1])
+    conditioner = make_mlp_conditioner(nnx.Rngs(0), num_in=len(names), num_bins=4, **options)
+    assert input_scaling(conditioner) == options["input_scaling"]
