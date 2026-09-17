@@ -30,6 +30,9 @@ from confrdm_jax.flows_affine import (
     input_scaling,
     log_input_scaling,
     flow_options,
+    DeepMLP,
+    num_hidden_layers,
+    train_step,
 )
 from confrdm_jax.likelihoods import create_crdm_hierarchical_likelihood_factory_approx
 from confrdm_jax.simulators import simulate_crdm
@@ -460,3 +463,94 @@ def test_config_log_inputs_follow_the_training_box(model):
     assert options["input_scaling"]["scale"][b] == pytest.approx(expected[1])
     conditioner = make_mlp_conditioner(nnx.Rngs(0), num_in=len(names), num_bins=4, **options)
     assert input_scaling(conditioner) == options["input_scaling"]
+
+
+def test_one_hidden_layer_is_eamax_mlp():
+    # The default must not change any existing checkpoint's structure.
+    from eamax.flows.model import MLP
+
+    for affine in (False, True):
+        conditioner = make_mlp_conditioner(nnx.Rngs(0), num_in=5, num_mid=16, num_bins=NUM_BINS, affine=affine)
+        assert type(conditioner) is MLP
+        assert num_hidden_layers(conditioner) == 1
+    with pytest.raises(ValueError, match="at least 1"):
+        make_mlp_conditioner(nnx.Rngs(0), num_in=5, num_bins=NUM_BINS, affine=True, num_hidden=0)
+
+
+@pytest.mark.parametrize("affine", [False, True])
+def test_deep_conditioner_is_the_composed_layers(affine):
+    conditioner = make_mlp_conditioner(
+        nnx.Rngs(0), num_in=5, num_mid=16, num_bins=NUM_BINS, affine=affine, num_hidden=3,
+    )
+    assert isinstance(conditioner, DeepMLP) and num_hidden_layers(conditioner) == 3
+    assert conditioner_layout(conditioner) == (NUM_BINS, affine)
+
+    x = jnp.array([[4.0, 0.3, 0.1, 0.8, 0.9]])
+    h = nnx.gelu(conditioner.linear1(x))
+    h = nnx.gelu(conditioner.linear_mid1(h))
+    h = nnx.gelu(conditioner.linear_mid2(h))
+    np.testing.assert_allclose(np.asarray(conditioner(x)), np.asarray(conditioner.linear2(h)), rtol=1e-12)
+
+
+def test_deep_log_scaled_affine_flow_trains():
+    # The full experimental stack -- two hidden layers, affine stage, log inputs -- must give a
+    # finite loss, reach every layer with its gradient, and survive a jitted train step.
+    import optax
+
+    conditioner = make_mlp_conditioner(
+        nnx.Rngs(5), num_in=5, num_mid=16, num_bins=NUM_BINS, affine=True, num_hidden=2,
+        input_scaling=log_input_scaling(CRDM_NAMES, CRDM_EPS, CRDM_BOX),
+    )
+    context = jnp.tile(jnp.array([[[4.0, 0.3, 0.1, 0.8, 0.9]]]), (4, 1, 1))
+    data = jnp.tile(jnp.linspace(0.05, 1.0, 16), (4, 1)).at[0, -1].set(jnp.inf)
+
+    grads = jax.grad(lambda c: loss_fn(c, data, context, 4.0))(conditioner)
+    for layer in ("linear1", "linear_mid1", "linear2"):
+        kernel = np.asarray(getattr(grads, layer).kernel.value)
+        assert np.all(np.isfinite(kernel)) and np.any(kernel != 0.0)
+
+    optimizer = nnx.Optimizer(conditioner, optax.adam(1e-3), wrt=nnx.Param)
+    metrics = nnx.MultiMetric(loss=nnx.metrics.Average("loss"))
+    train_step(conditioner, optimizer, metrics, data, context, 4.0)
+    assert np.isfinite(float(metrics.compute()["loss"]))
+
+
+def test_depth_round_trips_and_mismatches_are_refused(tmp_path):
+    deep = make_mlp_conditioner(nnx.Rngs(1), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True, num_hidden=2)
+    shallow = make_mlp_conditioner(nnx.Rngs(1), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True)
+    deep_path, shallow_path = tmp_path / "deep", tmp_path / "shallow"
+    save_conditioner(deep, str(deep_path), context_names=("v", "s", "b"))
+    save_conditioner(shallow, str(shallow_path), context_names=("v", "s", "b"))
+
+    from eamax.flows.checkpoint import read_metadata
+
+    assert read_metadata(str(deep_path))["num_hidden"] == 2
+    assert read_metadata(str(shallow_path))["num_hidden"] == 1
+
+    template = make_mlp_conditioner(nnx.Rngs(9), num_in=3, num_mid=16, num_bins=NUM_BINS, affine=True, num_hidden=2)
+    restored = load_conditioner(template, str(deep_path), context_names=("v", "s", "b"))
+    np.testing.assert_allclose(
+        np.asarray(evaluate_pdf_sf(deep, TIMES, CONTEXT)[0]),
+        np.asarray(evaluate_pdf_sf(restored, TIMES, CONTEXT)[0]),
+        rtol=1e-6,
+    )
+    with pytest.raises(ValueError, match="flow_num_hidden"):
+        load_conditioner(shallow, str(deep_path), context_names=("v", "s", "b"))
+    with pytest.raises(ValueError, match="flow_num_hidden"):
+        load_conditioner(template, str(shallow_path), context_names=("v", "s", "b"))
+
+
+def test_config_selects_depth():
+    from pathlib import Path
+
+    from hydra import compose, initialize_config_dir
+
+    config_dir = str(Path(__file__).parents[1] / "conf_jax")
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        default = compose("config", overrides=["model=crdm"])
+        deep = compose("config", overrides=["model=crdm", "model.flow_affine=true", "model.flow_num_hidden=2"])
+    assert flow_options(default.model)["num_hidden"] == 1
+    options = flow_options(deep.model)
+    assert options["num_hidden"] == 2
+    conditioner = make_mlp_conditioner(nnx.Rngs(0), num_in=5, num_bins=4, **options)
+    assert isinstance(conditioner, DeepMLP)

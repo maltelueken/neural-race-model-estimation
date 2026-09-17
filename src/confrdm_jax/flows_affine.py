@@ -56,6 +56,13 @@ config rather than learned. The transform is applied in :func:`_conditioner_outp
 place every context meets the network -- the training loss and the likelihood both -- and,
 like the spline settings, it is stored on the conditioner, recorded in the sidecar and checked
 on load.
+
+**Conditioner depth.** `eamax`'s conditioner has one hidden layer. ``num_hidden > 1`` builds a
+:class:`DeepMLP` with further ``dmid -> dmid`` GELU layers between ``linear1`` and ``linear2``,
+so the output layer keeps its name and :func:`conditioner_layout` still reads it. One hidden
+layer returns `eamax`'s MLP itself, so existing checkpoints and their structure are untouched.
+The depth changes the checkpoint's structure; it is recorded in the sidecar so that a mismatch
+fails with a message naming ``model.flow_num_hidden`` rather than an Orbax tree error.
 """
 
 import json
@@ -78,12 +85,14 @@ from jax.scipy import stats
 __all__ = [
     "MIN_SCALE",
     "FlowAccumulator",
+    "DeepMLP",
     "conditioner_layout",
     "evaluate_pdf_sf",
     "flow_options",
     "input_scaling",
     "load_conditioner",
     "log_input_scaling",
+    "num_hidden_layers",
     "loss_fn",
     "make_mlp_conditioner",
     "save_conditioner",
@@ -105,10 +114,35 @@ MIN_SCALE = 1e-3
 _SCALE_OFFSET = float(jnp.log(jnp.expm1(1.0 - MIN_SCALE)))
 
 
+class DeepMLP(MLP):
+    """`eamax.flows.MLP` with ``num_hidden - 1`` extra ``dmid -> dmid`` GELU layers.
+
+    ``linear1`` and ``linear2`` keep their roles and names -- input and output layer -- and the
+    extra layers are ``linear_mid1``, ``linear_mid2``, ... in order.
+    """
+
+    def __init__(self, din: int, dmid: int, dout: int, num_hidden: int, *, rngs: nnx.Rngs):
+        super().__init__(din, dmid, dout, rngs=rngs)
+        self.num_hidden = int(num_hidden)
+        for index in range(1, self.num_hidden):
+            setattr(self, f"linear_mid{index}", nnx.Linear(dmid, dmid, rngs=rngs))
+
+    def __call__(self, x):
+        x = nnx.gelu(self.linear1(x))
+        for index in range(1, self.num_hidden):
+            x = nnx.gelu(getattr(self, f"linear_mid{index}")(x))
+        return self.linear2(x)
+
+
+def num_hidden_layers(conditioner):
+    """Hidden layers in a conditioner: 1 for `eamax`'s MLP."""
+    return int(getattr(conditioner, "num_hidden", 1))
+
+
 def make_mlp_conditioner(
     rngs, num_in, num_mid=64, num_bins=4, affine=False,
     spline_range=DEFAULT_SPLINE_RANGE, boundary_slopes=DEFAULT_BOUNDARY_SLOPES,
-    input_scaling=None,
+    input_scaling=None, num_hidden=1,
 ):
     """`eamax.flows.make_mlp_conditioner`, optionally with the two affine outputs.
 
@@ -127,6 +161,9 @@ def make_mlp_conditioner(
     input_scaling : dict, optional
         ``{"eps", "loc", "scale"}``, each a length-``num_in`` sequence in context order, as
         returned by :func:`log_input_scaling`. Affine only.
+    num_hidden : int, optional
+        Hidden layers in the conditioner. ``1`` is `eamax`'s MLP; more gives a
+        :class:`DeepMLP`.
 
     Returns
     -------
@@ -134,6 +171,15 @@ def make_mlp_conditioner(
     """
     spline_range = float(spline_range)
     boundary_slopes = str(boundary_slopes)
+    num_hidden = int(num_hidden)
+    if num_hidden < 1:
+        raise ValueError(f"num_hidden must be at least 1, got {num_hidden}.")
+
+    def build(dout):
+        if num_hidden == 1:
+            return MLP(din=num_in, dmid=num_mid, dout=dout, rngs=rngs)
+        return DeepMLP(din=num_in, dmid=num_mid, dout=dout, num_hidden=num_hidden, rngs=rngs)
+
     if boundary_slopes not in _BOUNDARY_SLOPES:
         raise ValueError(f"boundary_slopes must be one of {_BOUNDARY_SLOPES}, got {boundary_slopes!r}.")
     if not spline_range > 0.0:
@@ -149,8 +195,10 @@ def make_mlp_conditioner(
             raise ValueError(
                 "Log-scaled inputs are only implemented for an affine flow (model.flow_affine=true)."
             )
-        return _eamax_make_mlp_conditioner(rngs, num_in=num_in, num_mid=num_mid, num_bins=num_bins)
-    conditioner = MLP(din=num_in, dmid=num_mid, dout=3 * num_bins + 3, rngs=rngs)
+        if num_hidden == 1:
+            return _eamax_make_mlp_conditioner(rngs, num_in=num_in, num_mid=num_mid, num_bins=num_bins)
+        return build(3 * num_bins + 1)
+    conditioner = build(3 * num_bins + 3)
     conditioner.spline_range = spline_range
     conditioner.boundary_slopes = boundary_slopes
     if input_scaling is not None:
@@ -233,6 +281,7 @@ def flow_options(model_cfg):
         "spline_range": float(model_cfg["flow_spline_range"]),
         "boundary_slopes": str(model_cfg["flow_boundary_slopes"]),
         "input_scaling": None,
+        "num_hidden": int(model_cfg["flow_num_hidden"]),
     }
     if bool(model_cfg["flow_log_inputs"]):
         options["input_scaling"] = log_input_scaling(
@@ -412,6 +461,7 @@ def save_conditioner(conditioner, path, step=0, context_names=None, num_mid=None
         metadata["spline_range"], metadata["boundary_slopes"] = spline_settings(conditioner)
         scaling = input_scaling(conditioner)
         metadata["input_scaling"] = None if scaling is None else {k: list(v) for k, v in scaling.items()}
+        metadata["num_hidden"] = num_hidden_layers(conditioner)
         (Path(path) / SIDECAR_NAME).write_text(json.dumps(metadata, indent=2))
 
 
@@ -434,6 +484,13 @@ def load_conditioner(conditioner, path, step=0, context_names=None):
     """
     metadata = read_metadata(path)
     if metadata is not None:
+        recorded_depth = int(metadata.get("num_hidden", 1))
+        if recorded_depth != num_hidden_layers(conditioner):
+            raise ValueError(
+                f"Checkpoint at {path} was trained with num_hidden={recorded_depth}, but the "
+                f"conditioner it is being loaded into has {num_hidden_layers(conditioner)}. Set "
+                "model.flow_num_hidden to match."
+            )
         recorded = bool(metadata.get("affine", False))
         expected = conditioner_layout(conditioner)[1]
         if recorded != expected:

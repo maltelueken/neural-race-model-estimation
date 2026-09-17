@@ -67,6 +67,10 @@ flow_boundary_slopes: identity
 # checkpoint; recorded in the sidecar and checked on load. Enable with model.flow_log_inputs=true.
 flow_log_inputs: false
 flow_input_log_eps: {v: 0.05, s: 0.05, b: 0.05}
+# Hidden GELU layers in the conditioner (see confrdm_jax.flows_affine.DeepMLP). 1 is eamax's
+# MLP; more changes the checkpoint's structure, so it is recorded in the sidecar and checked on
+# load. Being an override, it lands in the output directory name.
+flow_num_hidden: 1
 
 hierarchical:
   prior_factory:
