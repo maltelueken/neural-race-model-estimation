@@ -1,11 +1,35 @@
+# Training prior for the CRDM flow -- the box the conditioner is fitted over. The inference
+# likelihoods clamp flow inputs to it (model.flow_context_bounds) and log-scaled inputs take
+# their constants from it, so both follow any change here.
+#
+# Lower limits of s, b and tau are kept away from zero. Near s = 0 a trial is nearly
+# deterministic: its decision time is a fixed crossing time spread only by within-step
+# dequantisation, a box of width dt / t in log time. Measured with the 100k affine, log-input,
+# two-layer flow (v = 4, amp = 0.3, tau = 0.1): at s <= 0.01 the data's log-time SD is
+# 7.5e-4 to 1e-2 against a flow scale of 0.03 to 0.09, and the gradient of that one context's
+# loss is 19 to 420, against 0.5 to 7 at s >= 0.1. Training keeps sharpening the flow there,
+# and a 1M-step run with gradient clipping logged window-max gradient norms of 264, 1.3e4 and
+# 7.2e5 with the loss starting to degrade. b -> 0 (sub-millisecond crossings) and tau -> 0
+# (the pulse collapsing to a jump; the largest per-trial losses in the corner sweep) are the
+# same kind of degenerate corner. None of it matters for inference: in the hierarchical prior
+# s_true and b have 0.1% quantiles near 0.53 and tau near 0.06, the non-target accumulator's s
+# is fixed at 1, and the fastest decision times in the recovery data are ~20 ms.
+#
+# 0.25 for s and b and 0.01 for tau sit at about half of those quantiles; anything below is
+# clamped at inference time. At s = 0.1 the data's spread already matched the flow's scale
+# (0.08 vs 0.11), so 0.25 leaves margin.
+#
+# Checkpoints trained before this change used 0 for all three. Loading one of them under this
+# config still works for a plain or unscaled affine flow, but its clamp then starts at the new
+# limits; a log-scaled checkpoint is refused, because its input constants no longer match.
 _target_: confrdm_jax.priors.create_crdm_single_prior_uniform
 v_c_min: 0.0
 v_c_max: 8.0
 amp_min: 0.0
 amp_max: 1.0
-tau_min: 0.0
+tau_min: 0.01
 tau_max: 0.5
-s_min: 0.0
+s_min: 0.25
 s_max: 3.0
-b_min: 0.0
+b_min: 0.25
 b_max: 3.0
