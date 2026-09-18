@@ -34,7 +34,7 @@ fi
 uv run --frozen --extra gpu python scripts/train_conditioner.py \
     device=gpu \
     model=crdm \
-    model.sampler.dt=0.0005 \
+    model.sampler.dt=0.05 \
     model.flow_affine=true \
     model.flow_log_inputs=true \
     model.flow_num_hidden=2 \
