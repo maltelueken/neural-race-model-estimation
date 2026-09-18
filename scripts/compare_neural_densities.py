@@ -9,6 +9,10 @@ Usage
 python scripts/compare_neural_densities.py \\
     wald.conditioner_path=outputs/rdm/.../conditioner \\
     "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/.../conditioner}]"
+
+Each conditioner is rebuilt from its checkpoint's sidecar (depth, affine layout, spline
+settings, log-input scaling, width, bins) and evaluated through
+:mod:`confrdm_jax.flows_affine`, so plain and affine / log-input / deep flows both work.
 """
 
 import logging
@@ -26,9 +30,10 @@ from jax.scipy import stats
 from omegaconf import DictConfig
 
 from eamax.accumulators import inv_gauss_logpdf, inv_gauss_logsf, solve_volterra_fpt
-from eamax.flows import load_conditioner, make_mlp_conditioner, spline_flow
+from eamax.flows.checkpoint import read_metadata
 
 from confrdm_jax import configure_jax
+from confrdm_jax.flows_affine import load_conditioner, make_mlp_conditioner, spline_flow
 from confrdm_jax.specs import CRDM_CONTEXT_NAMES, WALD_CONTEXT_NAMES
 
 logger = logging.getLogger(__name__)
@@ -74,7 +79,10 @@ def make_wald_ref_batch(rt_grid):
 
 
 def make_volterra_batch_fn(rt_grid, dt, num_steps):
-    t_volt = jnp.arange(1, num_steps + 1) * dt
+    # The solver's grid starts at dt; anchor it at (0, 0) so decision times below dt are
+    # interpolated towards zero density rather than held at g(dt), which at dt = 0.05 is a
+    # visible error on the first grid cell.
+    t_volt = jnp.arange(0, num_steps + 1) * dt
 
     @jax.jit
     def volterra_batch(params):
@@ -86,6 +94,8 @@ def make_volterra_batch_fn(rt_grid, dt, num_steps):
         g_grids, G_grids = jax.vmap(_single)(
             params[:, 0], params[:, 1], tau_safe, params[:, 3], params[:, 4]
         )
+        g_grids = jnp.pad(g_grids, ((0, 0), (1, 0)))
+        G_grids = jnp.pad(G_grids, ((0, 0), (1, 0)))
         pdf = jax.vmap(lambda g: jnp.interp(rt_grid, t_volt, g))(g_grids)
         cdf = jax.vmap(lambda G: jnp.interp(rt_grid, t_volt, G))(G_grids)
         return jnp.maximum(pdf, 1e-30), jnp.clip(cdf, 0.0, 1.0)
@@ -124,27 +134,38 @@ def _time_fn(fn, params):
     return result, time.perf_counter() - t0
 
 
-def _load_conditioner(path_str, num_bins, num_mid, context_names):
-    """Load a checkpoint, checking its conditioning set against `context_names`.
+def _load_conditioner(path_str, context_names):
+    """Load a checkpoint, building its template from the sidecar.
 
-    Nothing in the weights records what the context columns mean, so a reordered set of the
-    same width would load without complaint and produce silently wrong densities.
-    `load_conditioner` compares against the checkpoint's sidecar where there is one.
+    The sidecar records the architecture, so the template always matches the weights. The
+    conditioning set is still checked against `context_names`: nothing in the weights records
+    what the context columns mean, so a reordered set of the same width would otherwise load
+    without complaint and produce silently wrong densities.
     """
-    path = Path(path_str)
+    path = Path(path_str).absolute()
     if not path.exists():
         warnings.warn(f"Conditioner path not found, skipping: {path}")
         return None
 
-    rngs = nnx.Rngs(default=0)
+    meta = read_metadata(path)
+    if meta is None:
+        raise FileNotFoundError(f"No conditioner sidecar at {path}")
     model = make_mlp_conditioner(
-        rngs, num_in=len(context_names), num_mid=num_mid, num_bins=num_bins
+        nnx.Rngs(default=0),
+        num_in=len(context_names),
+        num_mid=meta["num_mid"],
+        num_bins=meta["num_bins"],
+        affine=meta.get("affine", False),
+        spline_range=meta.get("spline_range", 5.0),
+        boundary_slopes=meta.get("boundary_slopes", "identity"),
+        input_scaling=meta.get("input_scaling"),
+        num_hidden=meta.get("num_hidden", 1),
     )
-    return load_conditioner(model, str(path.absolute()), context_names=list(context_names))
+    return load_conditioner(model, str(path), context_names=list(context_names))
 
 
-def run_wald_comparison(conditioner_path, num_bins, num_mid, wald_cfg):
-    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, WALD_CONTEXT_NAMES)
+def run_wald_comparison(conditioner_path, wald_cfg):
+    conditioner = _load_conditioner(conditioner_path, WALD_CONTEXT_NAMES)
     if conditioner is None:
         return None
 
@@ -182,8 +203,8 @@ def run_wald_comparison(conditioner_path, num_bins, num_mid, wald_cfg):
     }
 
 
-def run_crdm_comparison(conditioner_path, dt, num_bins, num_mid, chunk_size, crdm_cfg):
-    conditioner = _load_conditioner(conditioner_path, num_bins, num_mid, CRDM_CONTEXT_NAMES)
+def run_crdm_comparison(conditioner_path, dt, chunk_size, crdm_cfg):
+    conditioner = _load_conditioner(conditioner_path, CRDM_CONTEXT_NAMES)
     if conditioner is None:
         return None
 
@@ -256,8 +277,6 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"\n=== Wald  [{cfg.wald.conditioner_path}] ===")
         result = run_wald_comparison(
             cfg.wald.conditioner_path,
-            num_bins=cfg.wald.num_bins,
-            num_mid=cfg.wald.num_mid,
             wald_cfg=cfg.wald.param_values,
         )
         if result is not None:
@@ -273,8 +292,6 @@ def main(cfg: DictConfig) -> None:
             result = run_crdm_comparison(
                 entry.path,
                 dt=entry.dt,
-                num_bins=cfg.crdm.num_bins,
-                num_mid=cfg.crdm.num_mid,
                 chunk_size=cfg.evaluation.chunk_size,
                 crdm_cfg=cfg.crdm.param_values,
             )
