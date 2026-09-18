@@ -23,6 +23,9 @@ wald:
     b: [0.5, 1.0, 3.0]
 
 crdm:
+  # Accuracy is measured against the Volterra solver at this step for every flow; timing
+  # uses each flow's own dt. See scripts/compare_neural_densities.py.
+  reference_dt: 0.0005
   conditioners: [  # list of {dt: float, path: str}
     {
       dt: 0.05,
@@ -46,3 +49,5 @@ crdm:
 
 evaluation:
   chunk_size: 1
+
+output_path: outputs/compare_densities/density_comparison.nc
