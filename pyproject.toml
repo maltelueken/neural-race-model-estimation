@@ -35,7 +35,7 @@ dependencies = [
     "flax",
     "hydra-core",
     "jax",
-    "jax2onnx",    # only for scripts/export_conditioner_onnx.py
+    "jax2onnx>=0.17",    # only for scripts/export_conditioner_onnx.py; 0.16 fails on jax 0.11
     "keras",
     "matplotlib",
     "netcdf4",

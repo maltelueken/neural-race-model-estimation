@@ -26,16 +26,23 @@ Configuration lives under the ``c2st`` group in ``conf_jax/config.yaml``.
 
 Examples
 --------
+Both use the recoveries of the final RDM conditioner (affine, log inputs, two hidden
+layers, gradient clipping, 100k steps, s and b box [0.25, 3.5]); ``slurm/c2st_recovery.sh``
+and ``slurm/c2st_recovery_hierarchical.sh`` give the full paths. ``<flow>`` abbreviates
+``model.flow_affine=...`` through ``optimizer=adam_cosine_decay_clip``. The multirun
+directories spell the booleans ``True``, the single-run ones ``true``.
+
 Single-subject (one C2ST per subject, separately per number of trials)::
 
-    python scripts/c2st_recovery.py c2st.mode=single \
-        "c2st.single_recovery_dirs=['multirun/rdm/.../test_num_obs=50/train_steps=500000', \
-                                    'multirun/rdm/.../test_num_obs=500/train_steps=500000']"
+    python scripts/c2st_recovery.py c2st.mode=single \\
+        "c2st.recovery_dir='multirun/rdm/<flow>'" \\
+        "c2st.single_recovery_dirs=['multirun/rdm/<flow>/test_num_obs=50/train_steps=100000', \\
+                                    'multirun/rdm/<flow>/test_num_obs=1000/train_steps=100000']"
 
 Hierarchical (one C2ST per population for the whole model)::
 
-    python scripts/c2st_recovery.py c2st.mode=hierarchical \
-        c2st.recovery_dir=outputs/rdm/.../train_steps=500000
+    python scripts/c2st_recovery.py c2st.mode=hierarchical \\
+        c2st.recovery_dir=outputs/rdm/<flow>/train_steps=100000
 """
 
 import csv

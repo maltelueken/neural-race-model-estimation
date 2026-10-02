@@ -30,9 +30,17 @@ slow, wide ones.
 
 Usage
 -----
-python scripts/compare_neural_densities.py \\
-    wald.conditioner_path=outputs/rdm/.../conditioner \\
-    "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/.../conditioner}]"
+``conf_jax/compare_densities.yaml`` already points at the final conditioners: the RDM flow
+and the CRDM flows at dt = 0.05, 0.005 and 0.0005, all affine, log-input, two-layer, clipped
+and trained for 100k steps. So the default run is just::
+
+    python scripts/compare_neural_densities.py
+
+To score a different checkpoint, override the paths::
+
+    python scripts/compare_neural_densities.py \\
+        wald.conditioner_path=outputs/rdm/<overrides>/conditioner \\
+        "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/<overrides>/conditioner}]"
 
 Each conditioner is rebuilt from its checkpoint's sidecar (depth, affine layout, spline
 settings, log-input scaling, width, bins) and evaluated through

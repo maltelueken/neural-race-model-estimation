@@ -24,9 +24,18 @@ on its own with window adaptation; drop any chain whose adaptation collapsed; te
 clouds to the posterior. No tuning is substituted or repaired at any point — see
 :data:`DEGENERATE_STEP_SIZE`.
 
-Must be launched with the same overrides that produced the checkpoint::
+Must be launched with the same overrides that produced the checkpoint. Those overrides make
+Hydra run in the checkpoint's own directory, which is where ``conditioner_dir`` points by
+default. For the final CRDM conditioner
+(``slurm/parameter_recovery_crdm_hierarchical_affine_log_deep_clip_box.sh``)::
 
-    python scripts/parameter_recovery_hierarchical.py model=rdm
+    python scripts/parameter_recovery_hierarchical.py model=crdm model.sampler.dt=0.0005 \\
+        model.flow_affine=true model.flow_log_inputs=true model.flow_num_hidden=2 \\
+        model.num_bins=12 model.num_mid=128 \\
+        train_steps=100000 optimizer=adam_cosine_decay_clip
+
+The RDM equivalent, which also repeats the training-box overrides, is
+``slurm/parameter_recovery_rdm_hierarchical_affine_log_deep_clip_box.sh``.
 
 Writes ``hierarchical_recovery_pop{N}_approx.nc`` per population.
 """
