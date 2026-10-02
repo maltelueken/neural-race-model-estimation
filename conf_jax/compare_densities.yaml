@@ -5,34 +5,39 @@ hydra:
     dir: outputs/compare_densities
   job:
     chdir: False
-    env_set:
-      JAX_ENABLE_X64: "true"
+
+# See conf_jax/config.yaml. `auto` here rather than failing hard: this script is often run
+# interactively on a laptop, where there is no accelerator to require.
+device: auto
+require_device: true
+
+# Conditioner architecture (depth, affine layout, spline settings, log-input scaling, bins,
+# width) is read from each checkpoint's sidecar, so only the paths are configured here.
 
 wald:
   # set to path string to enable Wald comparison
-  conditioner_path: outputs/rdm/model.num_bins=12/model.num_mid=128/optimizer=adam_cosine_decay/train_steps=500000/conditioner
-  num_bins: 12
-  num_mid: 128
+  conditioner_path: outputs/rdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.training_prior.b_max=3.5/model.training_prior.b_min=0.25/model.training_prior.s_max=3.5/model.training_prior.s_min=0.25/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
   param_values:
     v: [0.5, 1.5, 2.5, 4.0, 8.0]
     s: [0.5, 1.0, 3.0]
     b: [0.5, 1.0, 3.0]
 
 crdm:
-  num_bins: 12
-  num_mid: 128
+  # Accuracy is measured against the Volterra solver at this step for every flow; timing
+  # uses each flow's own dt. See scripts/compare_neural_densities.py.
+  reference_dt: 0.0005
   conditioners: [  # list of {dt: float, path: str}
     {
       dt: 0.05,
-      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.05/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.05/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
     },
     {
       dt: 0.005,
-      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.005/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
     },
     {
       dt: 0.0005,
-      path: outputs/crdm/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005/optimizer=adam_cosine_decay/train_steps=1000000/conditioner
+      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
     }
   ]
   param_values:
@@ -44,3 +49,5 @@ crdm:
 
 evaluation:
   chunk_size: 1
+
+output_path: outputs/compare_densities/density_comparison.nc

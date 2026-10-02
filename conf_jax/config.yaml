@@ -20,12 +20,21 @@ hydra:
         exclude_keys:
           - model
           - conditioner_dir
-    env_set:
-      JAX_ENABLE_X64: true
+          # Where a job runs does not change what it computes, so it must not change where
+          # the checkpoint lands: recovery on CPU has to find a conditioner trained on GPU.
+          - device
+          - require_device
   job_logging:
     handlers:
       file:
         mode: w
+
+# Compute device for every entry point. `gpu` maps to JAX's CUDA platform and, with
+# `require_device`, fails loudly rather than falling back to CPU -- a fallback on a GPU node
+# runs correctly and roughly two orders of magnitude slower, which is easy to miss in a log.
+# `auto` takes whatever JAX finds and never fails. The SLURM jobs pass `device=gpu`.
+device: auto
+require_device: true
 
 train_steps: 50000
 train_batch_size: 64
@@ -38,9 +47,62 @@ conditioner_dir: .
 
 test_seed: 3500
 test_num_obs: 500
-test_num_datasets: 50
+test_num_datasets: 100
 
 learning_rate: 5e-3
+
+# Global gradient-norm threshold for optimizer=adam_cosine_decay_clip (unused otherwise).
+# Measured on 64 x 500-trial CRDM training batches (dt = 0.5 ms): the trained 100k affine,
+# log-input, two-layer flow has a median norm of 0.97 (0.12-3.4 over 8 batches), a fresh
+# initialisation 16.7 (11-29). 5.0 sits above every trained batch measured, so normal
+# late-training steps are untouched, and engages on the early phase and on any spike. The
+# training log reports the mean and max raw norm per window, which is how to check that.
+grad_clip_norm: 5.0
+
+# Starting-position support constraint, applied by both recovery scripts through
+# eamax.inference.init.T0Support.
+#
+# The likelihood is undefined for t0 >= min(rt). eamax scores such a trial at the
+# flat per-trial floor, so a chain that *starts* there starts on a plateau: the
+# gradient says nothing about which way t0 should move and window adaptation
+# cannot help, because flatness is not a curvature scale. (The old likelihood put
+# a slope-1e3 ramp there instead, which pushed t0 back down but made one such
+# trial outweigh a thousand real ones.) Nothing in the likelihood recovers such a
+# chain, so dispersion has to be support-aware to be worth anything.
+#
+# Both scripts therefore draw their starts from the prior *conditioned* on
+# t0 < t0_max_fraction * min_rt, by rejection rather than by clipping — a clip is
+# a point mass, and it lands in the one coordinate the dispersion exists to
+# spread.
+init:
+  # Below 1.0 so starts sit off the wall, but only just: min_rt is t0_true plus
+  # the fastest decision time, so a low cap excludes the *true* t0 from the
+  # region the sampler starts in, which is a worse failure than starting near
+  # the boundary. Share of units whose true t0 the cap excludes:
+  #
+  #     cap                        0.90    0.95    0.97    0.99
+  #     hierarchical subjects     4.50%   0.12%   0.00%   0.00%
+  #     hierarchical populations     30%      2%      0%      0%
+  #     single-subject RDM       22.60%   4.40%   1.40%   0.20%
+  #     single-subject CRDM      67.50%  35.00%  12.50%   2.50%
+  #
+  # 0.97 is the first value that excludes nothing hierarchically, which is where
+  # exclusion costs most: tempered SMC never corrects its initial cloud by
+  # weighting and has only mutation, at num_mcmc_steps = 1, to walk t0 back up.
+  # The single-subject path runs num_warmup window-adaptation steps per chain
+  # and can absorb the residual — worst on the CRDM, whose true t0 sits at a
+  # median 0.926 of min_rt (RDM 0.807, hierarchical 0.779).
+  #
+  # eamax's own default is the same 0.97 (init.DEFAULT_MAX_T0_FRACTION); it is
+  # passed explicitly so the value stays visible next to the measurements.
+  t0_max_fraction: 0.97
+
+  # Rejection budget per starting position. Acceptance is 9.5% for a whole
+  # hierarchical particle — all 20 subjects have to clear their own cap — and
+  # 61% (RDM) / 52% (CRDM) for a single-subject draw, though the worst
+  # individual data set measured sits at 2.5%. Exhausting the budget falls back
+  # to clipping, which both scripts count and log.
+  t0_rejection_max_attempts: 2000
 
 mcmc:
   num_warmup: 2000
@@ -67,8 +129,8 @@ c2st:
 
 # Hierarchical recovery settings
 hierarchical_recovery:
-  num_subjects: 50
-  test_num_populations: 1
+  num_subjects: 20
+  test_num_populations: 5
   test_num_obs_per_subject: 250
 
   smc:
@@ -78,3 +140,39 @@ hierarchical_recovery:
     num_integration_steps: 100
     num_mcmc_steps: 1
     target_ess: 0.5
+
+    # How the per-chain SMC runs are mapped. `sequential` (jax.lax.map) costs wall-clock
+    # linearly in num_chains but keeps peak memory to one chain's cloud; `vmap` runs them
+    # together, at num_chains times the memory.
+    #
+    # `sequential` is what the pre-eamax script did. `vmap` does not fit: the flow's
+    # activations for one HMC gradient are a float64 buffer of
+    # chains x particles x subjects x trials x 4*num_mid, which at the defaults
+    # (4 x 1000 x 20 x 250 x 256) is 38.2 GiB, the allocation that failed with
+    # RESOURCE_EXHAUSTED. One chain at a time needs 9.5 GiB.
+    map_chains: sequential
+
+    # Warn when a chain ends with fewer than this fraction of its particles
+    # distinct. Resampling duplicates particles and num_mcmc_steps mutation
+    # moves rediversify them only where the proposals are accepted, so at
+    # num_mcmc_steps = 1 duplicates can compound across tempering iterations.
+    # Nothing else detects it: a collapsed cloud is still uniformly weighted,
+    # so the final-increment weight ESS stays near 1.0 while the stored draws
+    # repeat and their R-hat and ESS overstate what was sampled. The counts go
+    # to the .nc as smc_num_unique / smc_num_unique_pre_resample.
+    min_unique_fraction: 0.5
+
+    # Convergence thresholds, checked on the posterior before each .nc is
+    # written so a bad population surfaces during the run rather than in the
+    # notebook afterwards. Past runs recorded R-hat up to 2.76 and 9.42 with
+    # nothing noticing at the time. The max and min actually seen also go to
+    # the .nc as max_rhat / min_ess, with the variable and coordinate they
+    # occurred at.
+    #
+    # Each "chain" is an independent SMC run with its own starting cloud and
+    # its own adapted mutation kernel, so R-hat measures what Gelman-Rubin
+    # assumes. ESS is the weaker of the two here: particles within a chain are
+    # exchangeable, so it does not penalise the duplicates that
+    # min_unique_fraction is there to catch. Read the two together.
+    max_rhat: 1.05
+    min_ess: 500

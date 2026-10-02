@@ -2,6 +2,25 @@ defaults:
   - /prior@training_prior: crdm_single_uniform
   - /prior@recovery_prior: crdm_informed
 
+# See conf_jax/model/rdm.yaml for what `spec` and `context_names` are for.
+spec: crdm
+context_names: [v, amp, tau, s, b]
+
+# The box the flow was trained on, per flow input, interpolated from the training prior so
+# the two cannot disagree. The neural likelihoods clip the flow's inputs to it: outside the
+# box the flow extrapolates, with gradient spikes and flat plateaus that collapse step-size
+# adaptation, while a clipped input sees the density at the box edge. Inside the box nothing
+# changes. See confrdm_jax.likelihoods._flow_accumulator and CONFRDM_JAX.md §16.
+#
+# Only valid for a conditioner trained on *this* training prior. Recovering with a
+# checkpoint trained on a different box needs the matching model.training_prior overrides.
+flow_context_bounds:
+  v:   ['${model.training_prior.v_c_min}', '${model.training_prior.v_c_max}']
+  amp: ['${model.training_prior.amp_min}', '${model.training_prior.amp_max}']
+  tau: ['${model.training_prior.tau_min}', '${model.training_prior.tau_max}']
+  s:   ['${model.training_prior.s_min}', '${model.training_prior.s_max}']
+  b:   ['${model.training_prior.b_min}', '${model.training_prior.b_max}']
+
 sampler:
   _target_: confrdm_jax.simulators.sample_conditional_crdm_single
   dt: 0.004
@@ -13,25 +32,48 @@ test_sampler:
   dt: 0.001
   t_max: 4.0
 
-log_prior:
-  _target_: confrdm_jax.priors.crdm_prior
-  _partial_: true
-
 likelihood_factory_approx:
   _target_: confrdm_jax.likelihoods.create_crdm_likelihood_factory_approx
   _partial_: true
+  # Censoring horizon, so `rt = -1.0` sentinels are scored by the product of both
+  # accumulators' survival at t_max rather than landing on the likelihood floor.
+  # Interpolated from the sampler that produces the data, so the two cannot drift apart.
+  t_max: ${model.test_sampler.t_max}
+  context_bounds: ${model.flow_context_bounds}
 
 run_reference_recovery: false
 
 num_bins: 4
 num_mid: 64
-num_params: 5
+
+# Experimental (confrdm_jax.flows_affine): the conditioner also emits a per-context location
+# and scale on log decision time, so the spline models only the shape of a standardised log
+# time instead of sharing one fixed [-5, 5] window across every context. Must match the
+# checkpoint; the sidecar records it and loading refuses a mismatch. Being an override, it
+# lands in the output directory name, so affine and plain checkpoints never overwrite each
+# other.
+flow_affine: false
+# Spline settings for an affine flow only (see confrdm_jax.flows_affine): the active range in
+# the standardised coordinate and the distrax boundary condition. The defaults are eamax's.
+# "unconstrained" learns both end slopes, so the tails beyond the range need not be pinned to
+# slope 1; a narrower range then stops bins being spent bending into the corners.
+flow_spline_range: 5.0
+flow_boundary_slopes: identity
+# Log-scaled conditioner inputs, affine flow only (see confrdm_jax.flows_affine): each input
+# enters the network as (log(x + eps) - loc) / scale, with loc and scale the mean and SD of
+# log(x + eps) over the training box -- computed from flow_context_bounds, so they follow the
+# box. eps keeps zero inputs finite and sits well below the prior's mass. Must match the
+# checkpoint; recorded in the sidecar and checked on load. Enable with model.flow_log_inputs=true.
+flow_log_inputs: false
+flow_input_log_eps: {v: 0.05, amp: 0.01, tau: 0.005, s: 0.05, b: 0.05}
+# Hidden GELU layers in the conditioner (see confrdm_jax.flows_affine.DeepMLP). 1 is eamax's
+# MLP; more changes the checkpoint's structure, so it is recorded in the sidecar and checked on
+# load. Being an override, it lands in the output directory name.
+flow_num_hidden: 1
 
 hierarchical:
-  num_params: 7
-  param_names: ["v_c_intercept", "v_c_slope", "amp", "tau", "s_true", "b", "t0"]
   prior_factory:
-    _target_: confrdm_jax.simulators.create_hierarchical_crdm_prior_lkj_mvn
+    _target_: confrdm_jax.priors.create_hierarchical_crdm_prior_lkj_mvn
     _partial_: true
   test_sampler:
     _target_: confrdm_jax.simulators.sample_conditional_crdm_hierarchical_lkj_mvn
@@ -41,8 +83,39 @@ hierarchical:
   likelihood_factory_approx:
     _target_: confrdm_jax.likelihoods.create_crdm_hierarchical_likelihood_factory_approx
     _partial_: true
+    t_max: ${model.hierarchical.test_sampler.t_max}
+    context_bounds: ${model.flow_context_bounds}
   prior:
     lkj_concentration: 2.0
-    inverse_gamma_scale:    [0.4, 0.8, 0.8, 0.4, 0.4, 0.4, 0.25]
-    mu_loc:                 [0.1, 0.5, -1.4, -2.2, 0.0, 0.0, -1.2]
-    mu_scale:               [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.1]
+    # See conf_jax/model/rdm.yaml for the rationale: concentration is the tail
+    # index of the between-subject SD s, and at 4 it is heavy enough to push
+    # subject parameters far outside the box the flow was trained on.
+    # inverse_gamma_scale is otherwise scaled x4 alongside the concentration so
+    # the median of s is unchanged.
+    #
+    # The two entries that were 0.8 rather than 0.4 -- v_c_slope (index 1) and
+    # amp (index 2) -- are the exceptions.  x4 would put both at 3.2, twice
+    # every other entry, and that width is what kept CRDM outside the flow's
+    # support after the rest of the fix:
+    #
+    #   v_c_slope 3.2 -> v_c_true reached 11.5 against the flow's limit of 8
+    #                    (v_c_true = v_c_intercept + v_c_slope, so the widths add)
+    #   amp       3.2 -> amp reached 1.30 against its limit of 1.0
+    #
+    # Held to 2.0 and 2.5, which brings every flow input fully inside the box.
+    # Unlike the x4 entries these are NOT median-preserving: they narrow the
+    # between-subject SD of v_c_slope from a median of 0.22 to 0.14 and of amp
+    # from 0.22 to 0.17 -- a substantive claim that people differ less in
+    # conflict sensitivity and pulse amplitude than the x4 rule would imply.
+    inverse_gamma_concentration: 15.0
+    # One entry per parameter, in `spec` order:
+    # [v_c_intercept, v_c_slope, amp, tau, s_true, b, t0].
+    inverse_gamma_scale:    [1.6, 2.0, 2.5, 1.6, 1.6, 1.6, 1.0]
+    # mu_loc[1] = 0.92 puts the median of v_c_slope at exp(0.92) = 2.51.  The
+    # marginal median of a subject parameter is exactly exp(mu_loc), since
+    # log(theta) is symmetric about mu_loc once mu and z are integrated out.
+    # Raising it also shifts v_c_true = v_c_intercept + v_c_slope, whose median
+    # goes 2.78 -> 3.64 and max 6.88 -> 9.88; v_c_max in the training prior is
+    # raised to 14.0 to keep the headroom that move would otherwise consume.
+    mu_loc:                 [0.1, 0.92, -1.4, -2.2, 0.0, 0.0, -1.2]
+    mu_scale:               [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.1]
