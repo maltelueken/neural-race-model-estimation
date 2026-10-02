@@ -143,7 +143,7 @@ def test_flat_space_round_trips_and_carries_the_jacobian():
     flat = flat_space.sample(jax.random.key(4))
     assert flat.shape == (flat_space.num_flat_params,)
 
-    # The reconstruction is the formula every consumer used to write out for itself.
+    # The semi-centered reconstruction every consumer relies on.
     subject_params = flat_space.subject_params(flat)
     assert subject_params.shape == (3, 5)
     # The centered block passes through unchanged, which is what lets T0Support test `t0`

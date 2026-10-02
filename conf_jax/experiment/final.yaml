@@ -1,0 +1,34 @@
+# @package _global_
+#
+# The final run: the flows, recoveries and figures the paper reports. Select it with
+#
+#     python scripts/train_conditioner.py model=rdm +experiment=final
+#
+# This file is the one place the run tag and the flow recipe are written down. Results go to
+# outputs/<model>/<run_tag>/ (multirun/<model>/<run_tag>/ for sweeps), with any further
+# override -- e.g. model.sampler.dt=0.005 for the coarser CRDM flows -- as a subdirectory.
+# The figure scripts, the SLURM jobs and conf_jax/compare_densities.yaml all find the run
+# through confrdm_jax.runs, which reads `run_tag` from here.
+#
+# The recipe: a per-context affine stage on log decision time, log-scaled conditioner inputs,
+# two hidden layers, gradient clipping and 100k steps (see confrdm_jax.flows_affine and
+# conf_jax/flow/default.yaml). The training boxes are the model defaults
+# (conf_jax/prior/wald_uniform.yaml, crdm_single_uniform.yaml): changing one there changes
+# the log-input constants and the inference clamp, and a checkpoint trained on another box is
+# refused on load.
+#
+# To start a new run, copy this file, change `run_tag`, and select the copy instead.
+
+defaults:
+  - override /optimizer: adam_cosine_decay_clip
+
+run_tag: affine_log_deep_clip_100k
+
+train_steps: 100000
+
+model:
+  flow_affine: true
+  flow_log_inputs: true
+  flow_num_hidden: 2
+  num_bins: 12
+  num_mid: 128

@@ -1,8 +1,8 @@
 """Quick-look plotting helpers.
 
-Exploratory only — the figures that end up in write-ups are built in
-``notebooks/``, which reads the saved ``.nc`` recovery files rather than
-calling anything here.
+Exploratory only — the figures that end up in write-ups are built by
+``scripts/create_figure*.py``, which read the saved ``.nc`` recovery files rather
+than calling anything here.
 """
 
 import matplotlib.pyplot as plt

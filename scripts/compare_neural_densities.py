@@ -24,15 +24,22 @@ Accuracy metrics, per parameter set, with the reference as ``P`` and the flow as
   how far the flow moves probability mass in time.
 * ``ks`` -- Kolmogorov-Smirnov distance, ``max |F_P - F_Q|`` over the grid.
 
-All three are invariant to the grid, unlike the grid-mean absolute deviations this script
-used to report. The grid is log-spaced, so fast, narrow densities get as many points as
+All three are invariant to the grid. The grid is log-spaced, so fast, narrow densities get as many points as
 slow, wide ones.
 
 Usage
 -----
-python scripts/compare_neural_densities.py \\
-    wald.conditioner_path=outputs/rdm/.../conditioner \\
-    "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/.../conditioner}]"
+``conf_jax/compare_densities.yaml`` already points at the final run's conditioners
+(``conf_jax/experiment/final.yaml``): the RDM flow and the CRDM flows at dt = 0.05, 0.005 and
+0.0005, found through :mod:`confrdm_jax.runs`. So the default run is just::
+
+    python scripts/compare_neural_densities.py
+
+To score a different checkpoint, override the paths::
+
+    python scripts/compare_neural_densities.py \\
+        wald.conditioner_path=outputs/rdm/<run_tag>/conditioner \\
+        "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/<run_tag>/conditioner}]"
 
 Each conditioner is rebuilt from its checkpoint's sidecar (depth, affine layout, spline
 settings, log-input scaling, width, bins) and evaluated through
@@ -57,6 +64,7 @@ from eamax.accumulators import inv_gauss_logpdf, inv_gauss_logsf, solve_volterra
 from eamax.flows.checkpoint import read_metadata
 
 from confrdm_jax import configure_jax
+from confrdm_jax import runs  # noqa: F401  (registers the `run_dir` resolver the config uses)
 from confrdm_jax.flows_affine import load_conditioner, make_mlp_conditioner, spline_flow
 from confrdm_jax.specs import CRDM_CONTEXT_NAMES, WALD_CONTEXT_NAMES
 
@@ -366,7 +374,6 @@ def main(cfg: DictConfig) -> None:
 
     tree_dict: dict[str, xr.Dataset] = {}
 
-    # --- Wald ---
     if cfg.wald.conditioner_path is not None:
         logger.info(f"\n=== Wald  [{cfg.wald.conditioner_path}] ===")
         result = run_wald_comparison(
@@ -378,7 +385,6 @@ def main(cfg: DictConfig) -> None:
     else:
         logger.info("No Wald conditioner specified.")
 
-    # --- CRDM ---
     if cfg.crdm.conditioners:
         reference_dt = float(cfg.crdm.reference_dt)
         reference = compute_volterra_reference(

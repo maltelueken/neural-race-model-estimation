@@ -1,0 +1,27 @@
+# Conditioner architecture, shared by both models and merged into the model package by their
+# defaults lists (`- /flow@_here_: default`). These are eamax's plain-flow defaults; the final
+# run's settings are in conf_jax/experiment/final.yaml. Every key here changes the checkpoint,
+# so it must match the one being loaded -- the sidecar records it and loading refuses a
+# mismatch. See confrdm_jax.flows_affine for all of them.
+
+num_bins: 4
+num_mid: 64
+
+# Per-context affine stage: the conditioner also emits a location and scale on log decision
+# time, so the spline models only the shape of a standardised log time instead of sharing one
+# fixed [-5, 5] window across every context.
+flow_affine: false
+# Spline settings, affine flow only: the active range in the standardised coordinate and the
+# distrax boundary condition. The defaults are eamax's. "unconstrained" learns both end
+# slopes, so the tails beyond the range need not be pinned to slope 1; a narrower range then
+# stops bins being spent bending into the corners.
+flow_spline_range: 5.0
+flow_boundary_slopes: identity
+# Log-scaled conditioner inputs, affine flow only: each input enters the network as
+# (log(x + eps) - loc) / scale, with loc and scale the mean and SD of log(x + eps) over the
+# training box -- computed from flow_context_bounds, so they follow the box. eps keeps zero
+# inputs finite and sits well below the prior's mass; the per-input offsets
+# `flow_input_log_eps` are set in each model file, because the inputs differ.
+flow_log_inputs: false
+# Hidden GELU layers in the conditioner (confrdm_jax.flows_affine.DeepMLP). 1 is eamax's MLP.
+flow_num_hidden: 1

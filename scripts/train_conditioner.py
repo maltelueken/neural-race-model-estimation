@@ -8,10 +8,17 @@ split either.
 The objective, the optimiser step and the checkpoint format come from `eamax.flows`; what
 stays here is the schedule, the logging window and the checkpoint policy.
 
-Which model is trained comes from the Hydra config:
+Which model is trained comes from the Hydra config. The final conditioners are trained with
+the final experiment (``conf_jax/experiment/final.yaml``; ``slurm/train_conditioner_*.sh``)::
 
-    python scripts/train_conditioner.py model=rdm
-    python scripts/train_conditioner.py model=crdm num_bins=12 num_mid=128
+    python scripts/train_conditioner.py model=rdm +experiment=final
+    python scripts/train_conditioner.py model=crdm +experiment=final
+    python scripts/train_conditioner.py model=crdm +experiment=final model.sampler.dt=0.005
+
+which write to ``outputs/<model>/<run_tag>/`` -- the last one to its
+``model.sampler.dt=0.005`` subdirectory. Every job that loads a checkpoint must select the
+same experiment and repeat any further override: they set the architecture, and the training
+box sets the log-input constants and the inference-time clamp.
 
 `model=rdm` trains on ``sample_conditional_wald`` (one accumulator, constant drift, exact
 inverse Gaussian draws); `model=crdm` on ``sample_conditional_crdm_single`` (one accumulator
@@ -19,8 +26,7 @@ plus conflict pulse, simulated on a grid). In both cases the flow learns a *sing
 accumulator's first-passage density; the race is reassembled at inference time.
 
 The checkpoint is written to ``<hydra output dir>/conditioner``, together with a JSON
-sidecar recording what the flow was conditioned on. The same architecture overrides must be
-repeated when loading it — the sidecar records the context, not the weights' shapes.
+sidecar recording the flow's context columns and architecture, which loading checks.
 """
 
 import logging
@@ -33,8 +39,8 @@ from hydra.utils import instantiate
 from tqdm import tqdm
 
 from confrdm_jax import configure_jax
-# Local patch over eamax.flows: identical for a plain conditioner, plus the optional
-# per-context affine stage selected by `model.flow_affine`.
+# Local patch over eamax.flows: identical for a plain conditioner, plus the affine stage,
+# log-scaled inputs and depth the `model.flow_*` keys select.
 from confrdm_jax.flows_affine import (
     Maximum,
     flow_options,

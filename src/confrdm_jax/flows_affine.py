@@ -1,17 +1,16 @@
-"""Local patch over `eamax.flows`: an optional per-context location and scale on log time.
+"""Local patch over `eamax.flows`: the affine stage, log-scaled inputs and deeper conditioner.
 
-**Experimental.** This lives here rather than in `eamax` so it can be tried without
-touching the shared library. If it earns its place it belongs in `eamax.flows.model`; until
-then, everything that builds, trains, saves, loads or evaluates a conditioner in this
-repository goes through this module, which falls back to `eamax` unchanged for a plain
-conditioner.
+The final run's flows use all three. The patch lives here rather than in `eamax`, where it
+belongs (`eamax.flows.model`) if it is kept. Everything that builds, trains, saves, loads or
+evaluates a conditioner in this repository goes through this module, which falls back to
+`eamax` unchanged for a plain conditioner.
 
 **Why.** The `eamax` flow is ``Z ~ N(0, 1) -> spline -> exp -> T`` with the spline active
 on a fixed ``[-5, 5]`` on *both* axes. Every context has to share that one window of log
 decision time, but a single context only occupies ~3 units of it while the medians of
 different contexts spread over 6-9 (measured over the CRDM training box). The spline
-therefore spends most of its bins reaching the corners, and on the trained CRDM conditioner
-two of twelve bins carried 98.6% of the base mass — visible as kinks at the knots and as a
+therefore spends most of its bins reaching the corners, and on a trained plain CRDM
+conditioner two of twelve bins carried 98.6% of the base mass — visible as kinks at the knots and as a
 ~10% density error at the peak.
 
 **What.** With ``affine=True`` the conditioner emits two more outputs and the flow becomes
@@ -60,7 +59,7 @@ on load.
 **Conditioner depth.** `eamax`'s conditioner has one hidden layer. ``num_hidden > 1`` builds a
 :class:`DeepMLP` with further ``dmid -> dmid`` GELU layers between ``linear1`` and ``linear2``,
 so the output layer keeps its name and :func:`conditioner_layout` still reads it. One hidden
-layer returns `eamax`'s MLP itself, so existing checkpoints and their structure are untouched.
+layer returns `eamax`'s MLP itself, so one-layer checkpoints keep `eamax`'s structure.
 The depth changes the checkpoint's structure; it is recorded in the sidecar so that a mismatch
 fails with a message naming ``model.flow_num_hidden`` rather than an Orbax tree error.
 """
@@ -359,7 +358,7 @@ def spline_flow(data, context, conditioner):
     """`eamax.flows.spline_flow`, with the affine stage when the conditioner has one.
 
     A plain conditioner is handed straight to `eamax`, so its densities are bit-identical
-    to what they were before this module existed.
+    to `eamax`'s.
     """
     params = _conditioner_outputs(conditioner, context)
     num_bins, affine = _layout_from_width(params.shape[-1])
@@ -480,7 +479,8 @@ class FlowAccumulator(_EamaxFlowAccumulator):
 
 
 def save_conditioner(conditioner, path, step=0, context_names=None, num_mid=None, num_bins=None):
-    """`eamax.flows.save_conditioner`, recording the layout's ``affine`` flag in the sidecar."""
+    """`eamax.flows.save_conditioner`, also recording the layout, spline settings, log-input
+    scaling and depth in the sidecar."""
     _eamax_save_conditioner(
         conditioner, path, step=step, context_names=context_names,
         num_mid=num_mid, num_bins=num_bins,
@@ -506,11 +506,12 @@ def _same_scaling(recorded, expected):
 
 
 def load_conditioner(conditioner, path, step=0, context_names=None):
-    """`eamax.flows.load_conditioner`, refusing a template with the wrong layout or spline.
+    """`eamax.flows.load_conditioner`, refusing a template that does not match the sidecar.
 
-    Orbax would fail on an affine mismatch anyway, but with an error that says nothing about
-    ``model.flow_affine``; a spline-setting mismatch it would not catch at all. A sidecar
-    without these keys predates this module and is plain `eamax`.
+    Checks depth, affine layout, spline settings and log-input scaling. Orbax would fail on a
+    layout or depth mismatch anyway, but with an error that names no config key; a spline or
+    scaling mismatch it would not catch at all. A sidecar without these keys is read as a
+    plain `eamax` conditioner.
     """
     metadata = read_metadata(path)
     if metadata is not None:

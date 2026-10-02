@@ -13,8 +13,8 @@ boundary and the priors stay here. Two kinds live in this module:
   hyperparameters live in ``conf_jax/model/*.yaml`` under ``hierarchical.prior``.
 
 A *training* prior (``wald_uniform``, ``crdm_single_uniform``) is not an inference prior: it
-is the box the flow is fitted over, and it has to cover everything a sampler can plausibly
-visit under the recovery prior, because the flow interpolates and does not extrapolate.
+is the box the flow is fitted over. The likelihoods clamp the flow's inputs to it, so it
+should cover the bulk of what a sampler visits under the recovery and hierarchical priors.
 
 ``distrax.Joint`` priors are passed to jitted samplers as static arguments and hashed by
 identity, so reuse one object rather than rebuilding it per call — a fresh object
@@ -123,9 +123,9 @@ def create_wald_prior_uniform(
     b_min: float = 0.0,
     b_max: float = 2.0,
 ) -> distrax.Joint:
-    """Wide uniform training prior over ``[v, s, b]`` — the RDM conditioner's box.
+    """Uniform training prior over ``[v, s, b]`` — the RDM conditioner's box.
 
-    It must cover the region the RDM recovery prior reaches. The binding constraint is the
+    It should cover the region the RDM recovery prior reaches. The binding constraint is the
     *target* accumulator, whose drift is ``v_intercept + v_slope``, so `v_max` has to bound
     the sum rather than either term. Live values in ``conf_jax/prior/wald_uniform.yaml``.
     """
@@ -168,15 +168,13 @@ def create_crdm_single_prior_uniform(
     b_min: float = 0.0,
     b_max: float = 2.0,
 ) -> distrax.Joint:
-    """Wide uniform training prior over ``[v_c, amp, tau, s, b]`` — the CRDM conditioner's box.
+    """Uniform training prior over ``[v_c, amp, tau, s, b]`` — the CRDM conditioner's box.
 
-    Deliberately much wider than the recovery prior, for the reason in
-    :func:`create_wald_prior_uniform`. Live values in
-    ``conf_jax/prior/crdm_single_uniform.yaml``.
+    Live values in ``conf_jax/prior/crdm_single_uniform.yaml``.
 
     The low-drift / high-boundary corner of this box is where trials fail to cross within
-    ``t_max`` — about 3% of trials overall, heavily concentrated there. Those are handled as
-    right-censored observations by ``eamax.flows.loss_fn`` rather than dropped.
+    ``t_max``. Those are handled as right-censored observations by
+    :func:`confrdm_jax.flows_affine.loss_fn` rather than dropped.
     """
     return distrax.Joint([
         distrax.Uniform(v_c_min, v_c_max),
@@ -354,7 +352,7 @@ def create_hierarchical_rdm_prior_lkj_mvn(
     :data:`confrdm_jax.specs.RDM_PARAM_NAMES`, with ``b`` and ``t0`` centered.
 
     ``inverse_gamma_concentration`` is the *tail index* of the between-subject standard
-    deviations: ``P(s > x) ~ x**-concentration``. At the historical value of 4 a rare
+    deviations: ``P(s > x) ~ x**-concentration``. At a concentration of 4 a rare
     population draws ``s ~ 1`` in log space and so subject parameters spanning orders of
     magnitude — far outside the box the flow was trained on, where its log-density has
     gradient spikes and dead-flat plateaus that collapse NUTS step-size adaptation. Lowering

@@ -9,9 +9,9 @@ scores it cannot drift apart.
 
 **Accumulator indexing**, shared by both models: index 0 is the "false" / non-target
 accumulator, index 1 is the "true" / target one. Responses are coded ``0``/``1`` to match,
-hence ``first_response=0``. The design's ``target`` column is therefore all ones — the
-target accumulator is index 1 on every trial — and is what the ``target()`` /
-``nontarget()`` contrasts read.
+hence ``first_response=0``. The design's ``target`` is therefore 1 — the target
+accumulator is index 1 on every trial — and is what the ``target()`` / ``nontarget()``
+contrasts read.
 
 **Drift and noise.** The non-target accumulator drifts at ``v_intercept`` and the target at
 ``v_intercept + v_slope``; the non-target's within-trial noise is pinned to ``noise_scale``
@@ -22,8 +22,8 @@ identifiable — only drift-to-noise ratios are — so ``s_true`` is a relative 
 ``tau`` to exactly one accumulator, selected by the design's ``distractor`` column. Under
 the two-condition design that column *is* the congruency indicator: a congruent trial's
 distracting feature points at the target (accumulator 1), an incongruent one's at the
-non-target (accumulator 0). That replaces the sign-of-``amp`` routing the old simulators
-used; the pulse is now zero on every accumulator but the distractor's, by construction.
+non-target (accumulator 0). The pulse is zero on every accumulator but the distractor's, by
+construction.
 
 **``t0`` is last, and log-linked**, in both specs. :class:`eamax.inference.init.T0Support`
 locates it by name and raises if either stops holding, so the convention is checked rather

@@ -12,11 +12,13 @@ device: auto
 require_device: true
 
 # Conditioner architecture (depth, affine layout, spline settings, log-input scaling, bins,
-# width) is read from each checkpoint's sidecar, so only the paths are configured here.
+# width) is read from each checkpoint's sidecar, so only the paths are configured here. They
+# point at the final run's flows through the `run_dir` resolver (confrdm_jax.runs): the CRDM
+# flow at dt = 0.0005 is the run itself, the coarser ones its model.sampler.dt subdirectories.
 
 wald:
-  # set to path string to enable Wald comparison
-  conditioner_path: outputs/rdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.training_prior.b_max=3.5/model.training_prior.b_min=0.25/model.training_prior.s_max=3.5/model.training_prior.s_min=0.25/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
+  # null skips the Wald comparison
+  conditioner_path: "${run_dir:rdm}/conditioner"
   param_values:
     v: [0.5, 1.5, 2.5, 4.0, 8.0]
     s: [0.5, 1.0, 3.0]
@@ -26,20 +28,13 @@ crdm:
   # Accuracy is measured against the Volterra solver at this step for every flow; timing
   # uses each flow's own dt. See scripts/compare_neural_densities.py.
   reference_dt: 0.0005
-  conditioners: [  # list of {dt: float, path: str}
-    {
-      dt: 0.05,
-      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.05/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
-    },
-    {
-      dt: 0.005,
-      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.005/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
-    },
-    {
-      dt: 0.0005,
-      path: outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2/model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005/optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner
-    }
-  ]
+  conditioners:  # list of {dt: float, path: str}
+    - dt: 0.05
+      path: "${run_dir:crdm,'model.sampler.dt=0.05'}/conditioner"
+    - dt: 0.005
+      path: "${run_dir:crdm,'model.sampler.dt=0.005'}/conditioner"
+    - dt: 0.0005
+      path: "${run_dir:crdm}/conditioner"
   param_values:
     v: [0.5, 1.5, 2.5, 4.0, 8.0]
     s: [0.5, 1.0, 3.0]

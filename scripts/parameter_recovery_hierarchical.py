@@ -13,10 +13,9 @@ than a single chain; the cost is that the stored draws are particles, so what is
 Sampling happens in a flat *unconstrained* space, owned by
 :class:`eamax.hierarchical.HierarchicalFlatSpace`: it maps between the sampler's vector and
 the prior's five named components, applies the change of variables, and runs the
-semi-centered reconstruction. That last one used to be written out in four places — the
-simulators, the likelihood wrapper, the particle post-processing and the truth
-reconstruction — all of which had to agree or the recovered parameters would not be the ones
-the data were generated from. Now there is one definition.
+semi-centered reconstruction. The simulators, the likelihood wrapper, the particle
+post-processing and the truth reconstruction all use that one definition, so the recovered
+parameters are the ones the data were generated from.
 
 **What each fit does, in order.** Draw one independent particle cloud per chain from the
 prior conditioned on ``t0 < 0.97 * min(rt)`` per subject; adapt each chain's mutation kernel
@@ -24,9 +23,11 @@ on its own with window adaptation; drop any chain whose adaptation collapsed; te
 clouds to the posterior. No tuning is substituted or repaired at any point — see
 :data:`DEGENERATE_STEP_SIZE`.
 
-Must be launched with the same overrides that produced the checkpoint::
+Must be launched with the same experiment and overrides that produced the checkpoint. Hydra
+then runs in the checkpoint's own directory, which is where ``conditioner_dir`` points by
+default. For the final run (``slurm/parameter_recovery_{rdm,crdm}_hierarchical.sh``)::
 
-    python scripts/parameter_recovery_hierarchical.py model=rdm
+    python scripts/parameter_recovery_hierarchical.py model=crdm +experiment=final
 
 Writes ``hierarchical_recovery_pop{N}_approx.nc`` per population.
 """
@@ -70,7 +71,7 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 #: under-dispersed at 0.16-0.83x their siblings' spread and still broke R-hat
 #: (1.94 / 2.60 / 2.76), falling to ~1.01 only once they were dropped — the step-size column
 #: looked fixed, the fit was not. The cause is a start outside the ``t0`` support, which
-#: :class:`eamax.inference.init.T0Support` now removes at the source; a collapse that
+#: :class:`eamax.inference.init.T0Support` removes at the source; a collapse that
 #: survives that is a finding about the posterior and belongs in the run's output.
 DEGENERATE_STEP_SIZE = 1e-4
 
@@ -170,8 +171,7 @@ def _log_convergence(dt, label, max_rhat, min_ess):
     """Check split-R-hat and ESS on the posterior, log them, and record them.
 
     Runs before the ``.nc`` is written so a bad population is visible during the run rather
-    than in the notebook days later — past runs recorded R-hat up to 2.76 and 9.42, and
-    nothing in the script noticed at the time.
+    than in the figures days later.
 
     R-hat is the diagnostic that carries weight here. Each "chain" is an independent SMC run
     with its own starting cloud and its own adapted mutation kernel, so between-chain
@@ -238,11 +238,11 @@ def _build_population_datatree(
         ``mu`` is **not on the same scale in both groups**. The posterior stores ``exp(mu)``
         (natural scale, matching the subject-level variables) while ``constant_data`` stores
         raw log-space ``mu``, so anything comparing the two must exponentiate the truth first
-        — ``notebooks/create_figures_parameter_recovery_hierarchical.ipynb`` does exactly
+        — ``scripts/create_figures_parameter_recovery_hierarchical.py`` does exactly
         that. ``sigma`` is log-space in both and needs no such correction, since it is a
         standard deviation *of* log-parameters. Subject-level parameters are the well-behaved
         case: ``constant_data`` carries both ``log_theta`` and ``theta``, named for their
-        scales. Changing this is a file-format break — the notebook's compensating ``exp``
+        scales. Changing this is a file-format break — the figure script's compensating ``exp``
         would then double-apply — so it is documented rather than fixed.
 
     Args:
@@ -432,9 +432,9 @@ def main(cfg):
         max_attempts = init_cfg["t0_rejection_max_attempts"]
 
         # Overdispersed, support-aware warm-up starts: one prior draw per chain, already in
-        # the flat space the sampler works in. A raw prior draw is what used to put a chain on
-        # the `t0 >= min(rt)` wall — each of the 20 subjects gets an independent `t0` and only
-        # one of them has to land high to ruin the chain.
+        # the flat space the sampler works in. A raw prior draw can put a chain on the
+        # `t0 >= min(rt)` wall — each of the 20 subjects gets an independent `t0` and only one
+        # of them has to land high to ruin the chain.
         init_positions, init_exhausted = init_particles_from_prior(
             flat_space, num_chains, init_key, support=support, max_attempts=max_attempts,
         )

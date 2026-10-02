@@ -72,9 +72,8 @@ def test_analytic_rdm_peaks_near_the_generating_parameters(rdm_theta):
 
 
 def test_impossible_trials_land_on_the_flat_floor(rdm_theta):
-    # `rt <= t0` used to take a slope-1e3 penalty, so one such trial outweighed a thousand
-    # real ones. eamax evaluates it at the clamped decision time and floors the total, which
-    # is flat: the likelihood says nothing about which way t0 should move. Keeping out of
+    # eamax evaluates an `rt <= t0` trial at the clamped decision time and floors the total,
+    # which is flat: the likelihood says nothing about which way t0 should move. Keeping out of
     # this region is `T0Support`'s job, at initialisation.
     data = simulate_rdm(jax.random.key(2), rdm_theta, 50)
     theta = rdm_theta.at[4].set(jnp.log(float(jnp.max(data[:, 0])) + 1.0))
