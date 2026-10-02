@@ -6,10 +6,6 @@
 #   multirun/<model>/<long override dirname>/test_num_obs=N/train_steps=100000
 #                                            ->  multirun/<model>/<run_tag>/test_num_obs=N
 #
-# Only the final run moves; every other directory stays where it is. Run it from the
-# repository root -- locally and on Snellius. Without --apply it only prints what it would
-# do. It never overwrites: a destination that already exists is reported and skipped.
-#
 # Usage:
 #   bash scripts/migrate_to_run_tag.sh            # dry run
 #   bash scripts/migrate_to_run_tag.sh --apply

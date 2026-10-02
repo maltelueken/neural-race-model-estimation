@@ -84,7 +84,7 @@ def test_run_dir_resolver():
 def test_figure_settings():
     settings = runs.figure_settings()
     assert settings["num_obs"] == [50, 250, 500, 1000]
-    assert set(settings["convergence"]) == {"single", "hierarchical", "posterior_correlation"}
+    assert set(settings["convergence"]) == {"single", "hierarchical"}
 
 
 @pytest.mark.parametrize("model, dt", [("rdm", None), ("crdm", None), ("crdm", 0.005), ("crdm", 0.05)])

@@ -13,10 +13,9 @@ than a single chain; the cost is that the stored draws are particles, so what is
 Sampling happens in a flat *unconstrained* space, owned by
 :class:`eamax.hierarchical.HierarchicalFlatSpace`: it maps between the sampler's vector and
 the prior's five named components, applies the change of variables, and runs the
-semi-centered reconstruction. That last one used to be written out in four places — the
-simulators, the likelihood wrapper, the particle post-processing and the truth
-reconstruction — all of which had to agree or the recovered parameters would not be the ones
-the data were generated from. Now there is one definition.
+semi-centered reconstruction. The simulators, the likelihood wrapper, the particle
+post-processing and the truth reconstruction all use that one definition, so the recovered
+parameters are the ones the data were generated from.
 
 **What each fit does, in order.** Draw one independent particle cloud per chain from the
 prior conditioned on ``t0 < 0.97 * min(rt)`` per subject; adapt each chain's mutation kernel
@@ -72,7 +71,7 @@ logging.getLogger("absl").setLevel(logging.ERROR)
 #: under-dispersed at 0.16-0.83x their siblings' spread and still broke R-hat
 #: (1.94 / 2.60 / 2.76), falling to ~1.01 only once they were dropped — the step-size column
 #: looked fixed, the fit was not. The cause is a start outside the ``t0`` support, which
-#: :class:`eamax.inference.init.T0Support` now removes at the source; a collapse that
+#: :class:`eamax.inference.init.T0Support` removes at the source; a collapse that
 #: survives that is a finding about the posterior and belongs in the run's output.
 DEGENERATE_STEP_SIZE = 1e-4
 
@@ -172,8 +171,7 @@ def _log_convergence(dt, label, max_rhat, min_ess):
     """Check split-R-hat and ESS on the posterior, log them, and record them.
 
     Runs before the ``.nc`` is written so a bad population is visible during the run rather
-    than in the figures days later — past runs recorded R-hat up to 2.76 and 9.42, and
-    nothing in the script noticed at the time.
+    than in the figures days later.
 
     R-hat is the diagnostic that carries weight here. Each "chain" is an independent SMC run
     with its own starting cloud and its own adapted mutation kernel, so between-chain
@@ -434,9 +432,9 @@ def main(cfg):
         max_attempts = init_cfg["t0_rejection_max_attempts"]
 
         # Overdispersed, support-aware warm-up starts: one prior draw per chain, already in
-        # the flat space the sampler works in. A raw prior draw is what used to put a chain on
-        # the `t0 >= min(rt)` wall — each of the 20 subjects gets an independent `t0` and only
-        # one of them has to land high to ruin the chain.
+        # the flat space the sampler works in. A raw prior draw can put a chain on the
+        # `t0 >= min(rt)` wall — each of the 20 subjects gets an independent `t0` and only one
+        # of them has to land high to ruin the chain.
         init_positions, init_exhausted = init_particles_from_prior(
             flat_space, num_chains, init_key, support=support, max_attempts=max_attempts,
         )

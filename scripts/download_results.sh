@@ -9,7 +9,7 @@
 # transfers what changed, so rerunning after a new job is cheap.
 #
 # Usage:
-#   bash scripts/download_snellius.sh [RUN_TAG]
+#   bash scripts/download_results.sh [RUN_TAG]
 
 set -euo pipefail
 

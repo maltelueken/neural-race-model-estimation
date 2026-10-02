@@ -14,7 +14,7 @@
 # two hidden layers, gradient clipping and 100k steps (see confrdm_jax.flows_affine and
 # conf_jax/flow/default.yaml). The training boxes are the model defaults
 # (conf_jax/prior/wald_uniform.yaml, crdm_single_uniform.yaml): changing one there changes
-# the log-input constants and the inference clamp, and a checkpoint trained on the old box is
+# the log-input constants and the inference clamp, and a checkpoint trained on another box is
 # refused on load.
 #
 # To start a new run, copy this file, change `run_tag`, and select the copy instead.

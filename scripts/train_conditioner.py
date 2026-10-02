@@ -26,8 +26,7 @@ plus conflict pulse, simulated on a grid). In both cases the flow learns a *sing
 accumulator's first-passage density; the race is reassembled at inference time.
 
 The checkpoint is written to ``<hydra output dir>/conditioner``, together with a JSON
-sidecar recording what the flow was conditioned on. The same architecture overrides must be
-repeated when loading it — the sidecar records the context, not the weights' shapes.
+sidecar recording the flow's context columns and architecture, which loading checks.
 """
 
 import logging
@@ -40,8 +39,8 @@ from hydra.utils import instantiate
 from tqdm import tqdm
 
 from confrdm_jax import configure_jax
-# Local patch over eamax.flows: identical for a plain conditioner, plus the optional
-# per-context affine stage selected by `model.flow_affine`.
+# Local patch over eamax.flows: identical for a plain conditioner, plus the affine stage,
+# log-scaled inputs and depth the `model.flow_*` keys select.
 from confrdm_jax.flows_affine import (
     Maximum,
     flow_options,

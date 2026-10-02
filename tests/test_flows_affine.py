@@ -1,7 +1,6 @@
 """The local affine patch over `eamax.flows`.
 
-What must hold for it to be a safe experiment: a plain conditioner behaves exactly as
-`eamax`'s did, the affine stage is exactly ``log T = loc + scale * Y``, the survival
+What must hold: a plain conditioner behaves exactly as `eamax`'s does, the affine stage is exactly ``log T = loc + scale * Y``, the survival
 function is still exact given the flow, and a checkpoint cannot be loaded with the wrong
 layout.
 """
@@ -182,7 +181,7 @@ def test_loading_with_the_wrong_layout_is_refused(tmp_path):
 
 
 def test_a_pre_patch_sidecar_loads_as_plain(tmp_path):
-    # Every existing checkpoint was written by eamax directly and has no `affine` key.
+    # A checkpoint written by eamax directly has no `affine` key.
     from eamax.flows import save_conditioner as eamax_save_conditioner
 
     plain, _ = _pair()
@@ -247,7 +246,7 @@ def test_the_spline_settings_change_the_density():
 
 
 def test_survival_is_exact_with_unconstrained_boundary_slopes():
-    # Beyond the range the spline now extrapolates with learned slopes; it must still be
+    # Beyond the range the spline extrapolates with learned slopes; it must still be
     # strictly increasing, so S(t) is still the base survival at the inverse.
     _, narrow = _narrow_pair()
     _set_affine_outputs(narrow, loc=-1.0, raw_scale=-0.5)
@@ -494,7 +493,7 @@ def test_deep_conditioner_is_the_composed_layers(affine):
 
 
 def test_deep_log_scaled_affine_flow_trains():
-    # The full experimental stack -- two hidden layers, affine stage, log inputs -- must give a
+    # The final run's stack -- two hidden layers, affine stage, log inputs -- must give a
     # finite loss, reach every layer with its gradient, and survive a jitted train step.
     import optax
 

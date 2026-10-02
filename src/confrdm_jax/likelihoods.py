@@ -13,7 +13,7 @@ Which accumulator:
 Model                            Accumulator
 ===============================  ==================================================
 RDM, analytic                    :class:`eamax.accumulators.Wald` on both
-RDM, neural                      :class:`eamax.flows.FlowAccumulator` on both
+RDM, neural                      :class:`confrdm_jax.flows_affine.FlowAccumulator` on both
 CRDM, neural                     flow on the pulsed accumulator, ``Wald`` on the other
 CRDM, reference                  :class:`eamax.accumulators.VolterraPulsedWald` on the
                                  pulsed accumulator, ``Wald`` on the other
@@ -33,7 +33,8 @@ exponentiates on entry and the matching Jacobian belongs to the prior (see
 **Censoring.** The simulators emit ``rt = -1.0`` for trials that never crossed within
 ``t_max``, which is the observation ``T > t_max``. Passing ``t_max`` to a CRDM factory
 scores those by the product of every accumulator's survival at ``t_max`` — the race
-analogue of the right-censored MLE ``eamax.flows.loss_fn`` applies on the training side.
+analogue of the right-censored MLE :func:`confrdm_jax.flows_affine.loss_fn` applies on the
+training side.
 Leave it ``None`` only for data that cannot contain the sentinel. A sentinel that reaches a
 ``t_max=None`` likelihood is not an error and not floored either: the trial has no winner, so
 it is scored as "every accumulator survived" — but at the clamped decision time, where that
@@ -41,11 +42,10 @@ probability is ~1, so it contributes ~0 and is silently ignored. Hence the
 ``t_max: ${model.test_sampler.t_max}`` interpolation in ``conf_jax/model/crdm.yaml``, which
 makes the likelihood's horizon and the simulator's impossible to set separately.
 
-**No ``rt <= t0`` penalty.** The old likelihood put a slope-1e3 ramp there to push ``t0``
-back down. `eamax` evaluates such a trial at the clamped decision time and lets it land on
-the same flat floor as any other hopeless trial, so the likelihood says nothing about which
-way ``t0`` should move. That region is now kept out of by construction, at initialisation,
-with :class:`eamax.inference.init.T0Support`.
+**No ``rt <= t0`` penalty.** `eamax` evaluates such a trial at the clamped decision time and
+lets it land on the same flat floor as any other hopeless trial, so the likelihood says
+nothing about which way ``t0`` should move. That region is kept out of by construction, at
+initialisation, with :class:`eamax.inference.init.T0Support`.
 """
 
 import jax
@@ -107,17 +107,15 @@ def _flow_accumulator(conditioner, context_names, remat=False, context_bounds=No
     conditioner and adds the per-context affine stage for one trained with
     ``model.flow_affine=true``; the layout is read off the conditioner's weights.
 
-    ``amp`` is passed through ``abs`` because the pulse's sign selected *which* accumulator
-    carried it in the old simulators rather than changing its shape, and the flow was
-    trained on ``|amp|``. Under :mod:`confrdm_jax.specs` the routing is a design column and
-    ``amp`` is already non-negative, so the transform is a no-op on current configurations
-    and a guard against a spec that reintroduces a signed amplitude.
+    ``amp`` is passed through ``abs`` as a guard: the flow was trained on non-negative
+    amplitudes, and under :mod:`confrdm_jax.specs` ``amp`` is already non-negative, so the
+    transform is a no-op on current configurations.
 
     **Clamping to the training box.** With `context_bounds`, each named input is clipped to
     the ``(low, high)`` range the conditioner was trained over before it reaches the flow.
     Outside that box the spline flow extrapolates, and its log-density develops gradient
-    spikes and flat plateaus that collapse step-size adaptation and freeze an SMC cloud —
-    which is why the box used to be sized to the most extreme prior draw. Clipped, a particle
+    spikes and flat plateaus that collapse step-size adaptation and freeze an SMC cloud.
+    Clipped, a particle
     that strays outside sees the density at the box edge instead: bounded and continuous,
     with zero gradient along the clipped direction, so the prior alone pulls it back. Inside
     the box the likelihood is bit-identical. Only the flow's inputs are clipped; the inverse

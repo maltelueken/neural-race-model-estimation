@@ -17,7 +17,7 @@ require_device: true
 # flow at dt = 0.0005 is the run itself, the coarser ones its model.sampler.dt subdirectories.
 
 wald:
-  # set to path string to enable Wald comparison
+  # null skips the Wald comparison
   conditioner_path: "${run_dir:rdm}/conditioner"
   param_values:
     v: [0.5, 1.5, 2.5, 4.0, 8.0]

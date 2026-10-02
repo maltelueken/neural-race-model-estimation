@@ -5,10 +5,7 @@
 # inputs take their constants from it, so both follow any change here -- and a log-scaled
 # checkpoint trained on a different box is refused on load.
 #
-# History. The box was s, b in [0, 3], then [0, 5], because the hierarchical prior in
-# conf_jax/model/rdm.yaml overran 3.0 (s_true reached 4.07, b 3.37) before its tails were
-# tightened. The final flow (conf_jax/experiment/final.yaml) is trained on s, b in
-# [0.25, 3.5]:
+# s and b are in [0.25, 3.5]:
 #
 # * Lower limits away from zero, as for the CRDM (see crdm_single_uniform.yaml): near s = 0
 #   a trial is nearly deterministic and training keeps sharpening the flow there, with
@@ -17,7 +14,7 @@
 #   a median near 1.49, so 3.5 excludes only ~0.1% of initial SMC particles, which are
 #   clamped at inference.
 #
-# v stays at [0, 8]: v_c_true tops out at 4.96, so it already has 1.6x headroom.
+# v is in [0, 8]: the hierarchical prior's drifts top out near 5, so it has 1.6x headroom.
 _target_: confrdm_jax.priors.create_wald_prior_uniform
 v_min: 0.0
 v_max: 8.0

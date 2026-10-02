@@ -4,8 +4,7 @@
 #
 # RUN_TAG defaults to the final run's, read from conf_jax/experiment/final.yaml. Existing
 # files in figures/final/ with the same name are overwritten. Figures that do not depend on
-# a run (crdm_phenomena, rdm_crdm_illustration, hierarchical_prior_*) carry no tag and are not
-# copied.
+# a run (crdm_phenomena, rdm_crdm_illustration) carry no tag and are not copied.
 #
 # Usage:
 #   bash scripts/finalize_figures.sh [RUN_TAG]

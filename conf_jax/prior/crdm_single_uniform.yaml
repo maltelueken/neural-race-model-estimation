@@ -18,10 +18,6 @@
 # 0.25 for s and b and 0.01 for tau sit at about half of those quantiles; anything below is
 # clamped at inference time. At s = 0.1 the data's spread already matched the flow's scale
 # (0.08 vs 0.11), so 0.25 leaves margin.
-#
-# Checkpoints trained before this change used 0 for all three. Loading one of them under this
-# config still works for a plain or unscaled affine flow, but its clamp then starts at the new
-# limits; a log-scaled checkpoint is refused, because its input constants no longer match.
 _target_: confrdm_jax.priors.create_crdm_single_prior_uniform
 v_c_min: 0.0
 v_c_max: 8.0

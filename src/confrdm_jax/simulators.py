@@ -19,20 +19,18 @@ Two jobs, with different shapes:
 :func:`eamax.simulate.race_sample` turns an all-``inf`` trial into the ``(-1.0, -1)``
 sentinel that :func:`eamax.race.race_loglik` reads back as a right-censored observation. The
 single-accumulator training samplers have no race, so they pass ``inf`` through unchanged —
-``eamax.flows.loss_fn`` treats a non-finite or non-positive decision time as censored and
-scores it by ``log S(t_max)``.
+:func:`confrdm_jax.flows_affine.loss_fn` treats a non-finite or non-positive decision time as
+censored and scores it by ``log S(t_max)``.
 
-**Congruency is a design column, not a sign.** The old CRDM simulators routed the conflict
-pulse by the sign of ``amp``. It is now the design's ``distractor`` column, which under the
-two-condition design is the congruency indicator itself; ``amp`` is non-negative and simply
-zero on accumulators the pulse does not ride. See :mod:`confrdm_jax.specs`.
+**Congruency is a design column, not a sign.** The conflict pulse rides the accumulator the
+design's ``distractor`` column names, which under the two-condition design is the congruency
+indicator itself; ``amp`` is non-negative and simply zero on accumulators the pulse does not
+ride. See :mod:`confrdm_jax.specs`.
 
-**Numerical note.** The pulsed accumulator's grid values now come from the pulse's
-*closed-form* integrated drift (:class:`eamax.accumulators.SimulatedPulsedWald`) rather than
-from an Euler–Maruyama Riemann sum, which removes the sum's ``O(dt)`` drift error at the
-same ``dt``. The Brownian-bridge crossing test and within-step dequantisation are unchanged.
-CRDM draws therefore differ from pre-migration ones, by more than reseeding, and are more
-accurate at any given ``dt``.
+**Numerical note.** The pulsed accumulator's grid values come from the pulse's *closed-form*
+integrated drift (:class:`eamax.accumulators.SimulatedPulsedWald`), so there is no ``O(dt)``
+error from a Riemann sum of the drift. Crossings between grid points are caught by a
+Brownian-bridge test, and crossing times are dequantised uniformly within the step.
 """
 
 from functools import partial
@@ -59,8 +57,7 @@ from .priors import (
 from .specs import crdm_spec, rdm_spec
 
 __all__ = [
-    # Priors are re-exported so `conf_jax/prior/*.yaml` and `conf_jax/model/*.yaml` keep
-    # one `_target_` namespace for everything generative.
+    # Priors, re-exported from confrdm_jax.priors.
     "create_crdm_prior_informed",
     "create_crdm_single_prior_informed",
     "create_crdm_single_prior_uniform",
@@ -194,8 +191,8 @@ def sample_conditional_wald(
     """Online training sampler for the RDM flow — exact inverse Gaussian draws.
 
     There is no time grid and therefore no ``t_max``, so this sampler can never censor, which
-    is why ``eamax.flows.loss_fn`` may be given ``t_max=None`` and ``conf_jax/model/rdm.yaml``
-    omits it.
+    is why :func:`confrdm_jax.flows_affine.loss_fn` may be given ``t_max=None`` and
+    ``conf_jax/model/rdm.yaml`` omits it.
 
     Args:
         key: PRNG key.
@@ -232,9 +229,9 @@ def sample_conditional_crdm_single(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Online training sampler for the CRDM flow — one pulsed accumulator on a grid.
 
-    Called once per training step; nothing is stored between steps. ``amp`` is used as drawn
-    rather than sign-routed: the flow learns the density of a pulsed accumulator, and which
-    accumulator carries the pulse is the race's business.
+    Called once per training step; nothing is stored between steps. ``amp`` is used as
+    drawn: the flow learns the density of a pulsed accumulator, and which accumulator carries
+    the pulse is the race's business.
 
     Args:
         key: PRNG key.
@@ -242,8 +239,8 @@ def sample_conditional_crdm_single(
         prior: A ``distrax.Joint`` over ``[v_c, amp, tau, s, b]``. Static (hashed by
             identity).
         dt: Grid step. Static.
-        t_max: Integration horizon. Static; ``eamax.flows.loss_fn`` must be given the same
-            value so censored trials are scored by ``log S(t_max)``.
+        t_max: Integration horizon. Static; :func:`confrdm_jax.flows_affine.loss_fn` must be
+            given the same value so censored trials are scored by ``log S(t_max)``.
         chunk_size: Maximum elements per integration call, to bound peak memory. Static.
 
     Returns:

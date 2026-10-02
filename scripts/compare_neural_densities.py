@@ -24,8 +24,7 @@ Accuracy metrics, per parameter set, with the reference as ``P`` and the flow as
   how far the flow moves probability mass in time.
 * ``ks`` -- Kolmogorov-Smirnov distance, ``max |F_P - F_Q|`` over the grid.
 
-All three are invariant to the grid, unlike the grid-mean absolute deviations this script
-used to report. The grid is log-spaced, so fast, narrow densities get as many points as
+All three are invariant to the grid. The grid is log-spaced, so fast, narrow densities get as many points as
 slow, wide ones.
 
 Usage
@@ -375,7 +374,6 @@ def main(cfg: DictConfig) -> None:
 
     tree_dict: dict[str, xr.Dataset] = {}
 
-    # --- Wald ---
     if cfg.wald.conditioner_path is not None:
         logger.info(f"\n=== Wald  [{cfg.wald.conditioner_path}] ===")
         result = run_wald_comparison(
@@ -387,7 +385,6 @@ def main(cfg: DictConfig) -> None:
     else:
         logger.info("No Wald conditioner specified.")
 
-    # --- CRDM ---
     if cfg.crdm.conditioners:
         reference_dt = float(cfg.crdm.reference_dt)
         reference = compute_volterra_reference(

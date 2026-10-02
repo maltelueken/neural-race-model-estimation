@@ -4,9 +4,8 @@ defaults:
   - /flow@_here_: default
   - _self_
 
-# Parameterization, from confrdm_jax.specs. It is the single source of truth for the
-# parameter vector's names, order and links — both recovery scripts read them from here
-# rather than from a duplicated list.
+# Parameterization, from confrdm_jax.specs: the single source of truth for the parameter
+# vector's names, order and links.
 spec: rdm
 
 # The flow's conditioning columns, in the order it is trained on. Written to the checkpoint
@@ -65,19 +64,18 @@ hierarchical:
     _partial_: true
   prior:
     lkj_concentration: 2.0
-    # concentration is the tail index of the between-subject SD s: at the
-    # previous value of 4, rare populations drew s ~ 1 in log space and so
-    # subject parameters up to v=2.4e6 / s=274 / b=25 -- far outside the
-    # [0,8]x[0,5]x[0,5] box the flow is trained on (conf_jax/prior/wald_uniform.yaml),
-    # where its log-density has gradient spikes and flat plateaus that collapse
-    # NUTS step-size adaptation and freeze the SMC particle cloud.  15 bounds
-    # the worst case to v=4.98 / s=4.08 / b=3.38; inverse_gamma_scale is scaled
-    # x4 alongside it so the *median* of s is unchanged at 0.11.
+    # concentration is the tail index of the between-subject SD s. At 4, rare
+    # populations drew s ~ 1 in log space and so subject parameters up to
+    # v=2.4e6 / s=274 / b=25 -- far outside the box the flow is trained on
+    # (conf_jax/prior/wald_uniform.yaml), where its log-density has gradient spikes
+    # and flat plateaus that collapse NUTS step-size adaptation and freeze the SMC
+    # particle cloud. 15 bounds the worst case to v=4.98 / s=4.08 / b=3.38;
+    # inverse_gamma_scale puts the median of s at 0.11.
     inverse_gamma_concentration: 15.0
     # One entry per parameter, in `spec` order: [v_intercept, v_slope, s_true, b, t0].
     inverse_gamma_scale:    [1.6, 1.6, 1.6, 1.6, 1.0]
     mu_loc:                 [0.1, 0.3, 0.4, 0.4, -1.2]
-    # 0.15 rather than 0.25: mu_loc puts the median of s_true and b at 1.49
-    # against a box edge of 3.0, so there is only 2x headroom for the
-    # population mean to move before subjects leave the flow's support.
+    # mu_loc puts the median of s_true and b at 1.49 against a box edge of 3.5,
+    # so there is only ~2x headroom for the population mean to move before
+    # subjects leave the flow's support; mu_scale is kept narrow accordingly.
     mu_scale:               [0.15, 0.15, 0.15, 0.15, 0.1]
