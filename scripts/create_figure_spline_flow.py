@@ -1,8 +1,7 @@
 """Rational-quadratic spline flow: the bijection and the density it produces.
 
-Script version of ``notebooks/create_figure_spline_flow.ipynb``, pointed at the flows trained for 100k
-steps with an affine layer, two hidden layers, log-scaled inputs and gradient clipping
-(``optimizer=adam_cosine_decay_clip``) -- the same runs as the other figure scripts.
+Uses the final run's flows (``conf_jax/experiment/final.yaml``), found through
+:mod:`confrdm_jax.runs`.
 
 Four panels:
 
@@ -26,8 +25,6 @@ Run from anywhere:
     python scripts/create_figure_spline_flow.py
 """
 
-from pathlib import Path
-
 from confrdm_jax import configure_jax
 
 configure_jax("auto")
@@ -41,6 +38,7 @@ from flax import nnx  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from scipy import stats  # noqa: E402
 
+from confrdm_jax import runs  # noqa: E402
 from confrdm_jax.flows_affine import (  # noqa: E402
     load_conditioner,
     make_mlp_conditioner,
@@ -48,26 +46,12 @@ from confrdm_jax.flows_affine import (  # noqa: E402
     spline_knots,
 )
 
-RUN_TAG = "affine_log_deep_clip_100k"
+RUN_TAG = runs.run_tag()
 
-ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ROOT / "outputs"
-OUTDIR = ROOT / "figures"
+OUTDIR = runs.ROOT / "figures"
 
-RDM_CONDITIONER = (
-    OUTPUTS
-    / "rdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128"
-    / "model.training_prior.b_max=3.5/model.training_prior.b_min=0.25"
-    / "model.training_prior.s_max=3.5/model.training_prior.s_min=0.25"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner"
-)
-CRDM_CONDITIONER = (
-    OUTPUTS
-    / "crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner"
-)
+RDM_CONDITIONER = runs.conditioner_dir("rdm")
+CRDM_CONDITIONER = runs.conditioner_dir("crdm")
 
 Z_MIN, Z_MAX, NUM_Z = -5.5, 2.0, 1000
 Z_RANGE = np.linspace(Z_MIN, Z_MAX, NUM_Z)

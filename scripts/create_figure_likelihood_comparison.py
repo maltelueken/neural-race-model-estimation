@@ -1,9 +1,7 @@
 """Neural vs. reference race densities for the RDM and CRDM.
 
-Script version of ``notebooks/create_figure_likelihood_comparison.ipynb``, pointed at the flows
-trained for 100k steps with an affine layer, two hidden layers, log-scaled inputs and
-gradient clipping (``optimizer=adam_cosine_decay_clip``) -- the same runs as
-``create_figures_parameter_recovery_hierarchical.py``.
+Uses the final run's flows (``conf_jax/experiment/final.yaml``), found through
+:mod:`confrdm_jax.runs`.
 
 Each panel shows the joint density of (response time, choice) for one parameter set, with
 choice 0 (non-target) mirrored onto negative response times:
@@ -26,8 +24,6 @@ Run from anywhere:
     python scripts/create_figure_likelihood_comparison.py
 """
 
-from pathlib import Path
-
 from confrdm_jax import configure_jax
 
 configure_jax("auto")
@@ -41,6 +37,7 @@ from eamax.accumulators.volterra import solve_volterra_fpt  # noqa: E402
 from eamax.flows.checkpoint import read_metadata  # noqa: E402
 from flax import nnx  # noqa: E402
 
+from confrdm_jax import runs  # noqa: E402
 from confrdm_jax.flows_affine import load_conditioner, make_mlp_conditioner  # noqa: E402
 from confrdm_jax.likelihoods import (  # noqa: E402
     _hybrid_race,
@@ -50,31 +47,16 @@ from confrdm_jax.likelihoods import (  # noqa: E402
 )
 from confrdm_jax.specs import crdm_spec, make_design  # noqa: E402
 
-RUN_TAG = "affine_log_deep_clip_100k"
+RUN_TAG = runs.run_tag()
 
-ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ROOT / "outputs"
-OUTDIR = ROOT / "figures"
+OUTDIR = runs.ROOT / "figures"
 
-RDM_CONDITIONER = (
-    OUTPUTS
-    / "rdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128"
-    / "model.training_prior.b_max=3.5/model.training_prior.b_min=0.25"
-    / "model.training_prior.s_max=3.5/model.training_prior.s_min=0.25"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner"
-)
+RDM_CONDITIONER = runs.conditioner_dir("rdm")
 # One CRDM flow per training-simulator step size, all compared against the Volterra solver
 # at REFERENCE_DT.
 CRDM_DTS = [0.05, 0.005, 0.0005]
 REFERENCE_DT = 0.0005
-CRDM_CONDITIONERS = {
-    dt: OUTPUTS
-    / "crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / f"model.num_bins=12/model.num_mid=128/model.sampler.dt={dt}"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner"
-    for dt in CRDM_DTS
-}
+CRDM_CONDITIONERS = {dt: runs.conditioner_dir("crdm", dt=dt) for dt in CRDM_DTS}
 
 DT_TEST = 0.005
 T_MAX = 4.0

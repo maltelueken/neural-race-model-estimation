@@ -6,12 +6,18 @@ defaults:
  - optimizer: adamw
  - sweeper: basic
 
+# Results go to outputs/<model>/<run_tag>/<other overrides>. `run_tag` names a run; it is set
+# by an experiment config (conf_jax/experiment/final.yaml) and is `dev` otherwise. The
+# experiment's own settings stay out of the directory name, so only genuine deviations from
+# it -- model.sampler.dt=0.005, test_num_obs=50 -- appear there, as subdirectories.
+run_tag: dev
+
 hydra:
   run:
-    dir: outputs/${hydra:runtime.choices.model}/${hydra.job.override_dirname}
+    dir: outputs/${hydra:runtime.choices.model}/${run_tag}/${hydra.job.override_dirname}
   sweep:
     dir: multirun
-    subdir: ${hydra:runtime.choices.model}/${hydra.job.override_dirname}
+    subdir: ${hydra:runtime.choices.model}/${run_tag}/${hydra.job.override_dirname}
   job:
     chdir: True
     config:
@@ -19,7 +25,12 @@ hydra:
         item_sep: "/"
         exclude_keys:
           - model
+          - experiment
+          - run_tag
           - conditioner_dir
+          # Paths to results to read; the C2ST's own directory only holds its log.
+          - c2st.recovery_dir
+          - c2st.single_recovery_dirs
           # Where a job runs does not change what it computes, so it must not change where
           # the checkpoint lands: recovery on CPU has to find a conditioner trained on GPU.
           - device
@@ -114,8 +125,9 @@ c2st:
   mode: single  # single | hierarchical
   recovery_dir: .  # directory holding the recovery .nc files (relative to launch dir)
   # For single mode: one recovery dir per number of trials. Each is run as a
-  # separate C2ST and the number of trials is read from the file. If empty,
-  # falls back to the single `recovery_dir` above.
+  # separate C2ST and the number of trials is read from the file. If empty, every
+  # `test_num_obs=*` directory under `recovery_dir` -- the layout a single-subject
+  # sweep writes -- or else `recovery_dir` itself.
   single_recovery_dirs: []
   approx_file: parameter_recovery_approx.nc
   ref_file: parameter_recovery_ref.nc
@@ -164,7 +176,7 @@ hierarchical_recovery:
 
     # Convergence thresholds, checked on the posterior before each .nc is
     # written so a bad population surfaces during the run rather than in the
-    # notebook afterwards. Past runs recorded R-hat up to 2.76 and 9.42 with
+    # figures afterwards. Past runs recorded R-hat up to 2.76 and 9.42 with
     # nothing noticing at the time. The max and min actually seen also go to
     # the .nc as max_rhat / min_ess, with the variable and coordinate they
     # occurred at.

@@ -1,10 +1,8 @@
 """Hierarchical parameter-recovery figures for the RDM and CRDM.
 
-Script version of ``notebooks/create_figures_parameter_recovery_hierarchical.ipynb``, pointed
-at the flows trained for 100k steps with an affine layer, two hidden layers, log-scaled
-inputs and gradient clipping (``optimizer=adam_cosine_decay_clip``). The RDM flow was
-trained on the raised-minimum box (s, b in [0.25, 3.5]); see
-``slurm/parameter_recovery_{rdm,crdm}_hierarchical_affine_log_deep_clip_box.sh``.
+Reads the final run's hierarchical recoveries (``conf_jax/experiment/final.yaml``), which
+sit next to its conditioners in ``outputs/<model>/<run_tag>/``, found through
+:mod:`confrdm_jax.runs`; see ``slurm/parameter_recovery_{rdm,crdm}_hierarchical.sh``.
 
 RDM: the neural (``approx``) posterior is compared against the analytic (``ref``)
 posterior, since both exist. CRDM: there is no analytic likelihood, so the neural
@@ -12,7 +10,8 @@ posterior is compared against the true generating parameters.
 
 Parameters whose R-hat (across the SMC chains) is at or above ``RHAT_THRESHOLD``, or
 whose bulk or tail ESS is at or below ``ESS_THRESHOLD``, are masked out before
-summarizing.
+summarizing. Both come from ``conf_jax/figures.yaml`` (``convergence.hierarchical``); the
+number of populations from ``conf_jax/config.yaml``.
 
 Outputs (written to ``figures/``, each file name ending in
 ``_{RUN_TAG}.png`` so the figures from earlier runs are not overwritten):
@@ -26,37 +25,26 @@ Run from anywhere:
     python scripts/create_figures_parameter_recovery_hierarchical.py
 """
 
-from pathlib import Path
-
 import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
+from omegaconf import OmegaConf
 from xarray import open_datatree
 
-NUM_POPS = 5
-RHAT_THRESHOLD = 1.05
-ESS_THRESHOLD = 400
-RUN_TAG = "affine_log_deep_clip_100k"
+from confrdm_jax import runs
 
-ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ROOT / "outputs"
-OUTDIR = ROOT / "figures"
+NUM_POPS = OmegaConf.load(runs.CONF_DIR / "config.yaml")["hierarchical_recovery"]["test_num_populations"]
+_CONVERGENCE = runs.figure_settings()["convergence"]["hierarchical"]
+RHAT_THRESHOLD = _CONVERGENCE["rhat"]
+ESS_THRESHOLD = _CONVERGENCE["ess"]
+RUN_TAG = runs.run_tag()
 
-RUN_DIRS = {
-    "rdm": OUTPUTS
-    / "rdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128"
-    / "model.training_prior.b_max=3.5/model.training_prior.b_min=0.25"
-    / "model.training_prior.s_max=3.5/model.training_prior.s_min=0.25"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000",
-    "crdm": OUTPUTS
-    / "crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000",
-}
+OUTDIR = runs.ROOT / "figures"
+
+RUN_DIRS = {model: runs.run_dir(model) for model in ("rdm", "crdm")}
 
 POP_PARAM_LABELS = {
     "theta": r"$\theta$",

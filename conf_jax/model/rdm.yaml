@@ -1,6 +1,8 @@
 defaults:
   - /prior@training_prior: wald_uniform
   - /prior@recovery_prior: rdm_informed
+  - /flow@_here_: default
+  - _self_
 
 # Parameterization, from confrdm_jax.specs. It is the single source of truth for the
 # parameter vector's names, order and links — both recovery scripts read them from here
@@ -44,33 +46,8 @@ likelihood_factory_ref:
 
 run_reference_recovery: true
 
-num_bins: 4
-num_mid: 64
-
-# Experimental (confrdm_jax.flows_affine): the conditioner also emits a per-context location
-# and scale on log decision time, so the spline models only the shape of a standardised log
-# time instead of sharing one fixed [-5, 5] window across every context. Must match the
-# checkpoint; the sidecar records it and loading refuses a mismatch. Being an override, it
-# lands in the output directory name, so affine and plain checkpoints never overwrite each
-# other.
-flow_affine: false
-# Spline settings for an affine flow only (see confrdm_jax.flows_affine): the active range in
-# the standardised coordinate and the distrax boundary condition. The defaults are eamax's.
-# "unconstrained" learns both end slopes, so the tails beyond the range need not be pinned to
-# slope 1; a narrower range then stops bins being spent bending into the corners.
-flow_spline_range: 5.0
-flow_boundary_slopes: identity
-# Log-scaled conditioner inputs, affine flow only (see confrdm_jax.flows_affine): each input
-# enters the network as (log(x + eps) - loc) / scale, with loc and scale the mean and SD of
-# log(x + eps) over the training box -- computed from flow_context_bounds, so they follow the
-# box. eps keeps zero inputs finite and sits well below the prior's mass. Must match the
-# checkpoint; recorded in the sidecar and checked on load. Enable with model.flow_log_inputs=true.
-flow_log_inputs: false
+# Offsets for the log-scaled inputs (model.flow_log_inputs; see conf_jax/flow/default.yaml).
 flow_input_log_eps: {v: 0.05, s: 0.05, b: 0.05}
-# Hidden GELU layers in the conditioner (see confrdm_jax.flows_affine.DeepMLP). 1 is eamax's
-# MLP; more changes the checkpoint's structure, so it is recorded in the sidecar and checked on
-# load. Being an override, it lands in the output directory name.
-flow_num_hidden: 1
 
 hierarchical:
   prior_factory:

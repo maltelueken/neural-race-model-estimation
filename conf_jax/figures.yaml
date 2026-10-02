@@ -1,0 +1,22 @@
+# Settings shared by the figure scripts (scripts/create_figure*.py), read through
+# confrdm_jax.runs.figure_settings. Not a Hydra config. The run whose results are plotted is
+# the final one, conf_jax/experiment/final.yaml.
+
+# Trials per data set in single-subject recovery. Also the sweep the single-subject recovery
+# jobs run (slurm/parameter_recovery_*_single.sh read it through confrdm_jax.runs).
+num_obs: [50, 250, 500, 1000]
+
+# Convergence masks applied before summarising. Units failing them are dropped from the
+# figures. The values differ by analysis on purpose and are the ones the current figures were
+# made with; conf_jax/config.yaml has the separate run-time warning thresholds of the
+# hierarchical recovery (hierarchical_recovery.smc.max_rhat / min_ess).
+convergence:
+  # Subjects with R-hat >= rhat or bulk/tail ESS <= ess on any parameter.
+  single: {rhat: 1.01, ess: 400}
+  # Parameters with R-hat >= rhat or bulk/tail ESS <= ess.
+  hierarchical: {rhat: 1.05, ess: 400}
+
+# Two-colour palette of the single-subject recovery and SBC figures. Note that the scripts do
+# not assign it consistently: the recovery figures' hue order puts the neural posterior on the
+# first colour, the SBC figure puts it on the second.
+palette: ["#d95f02", "#7570b3"]

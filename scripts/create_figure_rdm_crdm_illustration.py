@@ -1,7 +1,6 @@
 """Illustration of evidence accumulation in the RDM and the CRDM.
 
-Script version of ``notebooks/create_figure_rdm_crdm_illustration.ipynb``. Two panels share
-the y-axis:
+Two panels share the y-axis:
 
   * left, the racing diffusion model: two accumulators with constant drifts v_0 and v_1,
   * right, the conflict RDM: the same race with a gamma-shaped conflict pulse eta(t) added

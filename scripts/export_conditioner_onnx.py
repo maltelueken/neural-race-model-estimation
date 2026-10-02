@@ -15,17 +15,17 @@ the raw parameters in the sidecar's ``context_names`` order. The clamp of the in
 training box that the likelihood applies is *not* part of the flow and is not exported; a
 caller outside the box gets the flow's extrapolation.
 
-Run (defaults to the final CRDM conditioner, dt = 0.0005)::
+Run (defaults to the final run's CRDM conditioner, ``confrdm_jax.runs.conditioner_dir("crdm")``)::
 
     python scripts/export_conditioner_onnx.py --out spline_flow.onnx
+
+or name another checkpoint::
+
+    python scripts/export_conditioner_onnx.py --ckpt outputs/<model>/<run_tag>/conditioner
 
 jax2onnx 0.16 fails on jax 0.11 (``Var.__init__() takes 2 positional arguments``); 0.17 works.
 Until ``uv.lock`` is refreshed, ``uv run --with jax2onnx==0.17.0 python scripts/...`` runs it
 without touching the environment.
-
-or name another checkpoint::
-
-    python scripts/export_conditioner_onnx.py --ckpt outputs/<model>/<overrides>/conditioner
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ from jax.scipy import stats
 
 from eamax.flows.checkpoint import read_metadata
 
+from confrdm_jax import runs
+
 # The private helpers are used so the exported bijector is built exactly as the likelihood
 # builds it, rather than from a copy that could drift.
 from confrdm_jax.flows_affine import (
@@ -53,14 +55,7 @@ from confrdm_jax.flows_affine import (
     spline_settings,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-
-FINAL_CRDM_CONDITIONER = (
-    ROOT
-    / "outputs/crdm/model.flow_affine=true/model.flow_log_inputs=true/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128/model.sampler.dt=0.0005"
-    / "optimizer=adam_cosine_decay_clip/train_steps=100000/conditioner"
-)
+FINAL_CRDM_CONDITIONER = runs.conditioner_dir("crdm")
 
 
 def load_from_sidecar(path, step=0):

@@ -8,26 +8,17 @@ split either.
 The objective, the optimiser step and the checkpoint format come from `eamax.flows`; what
 stays here is the schedule, the logging window and the checkpoint policy.
 
-Which model is trained comes from the Hydra config. The final conditioners -- affine stage,
-log-scaled inputs, two hidden layers, gradient clipping, 100k steps -- are trained with
-(``slurm/train_conditioner_{rdm,crdm_0.0005}_affine_log_deep_clip_box.sh``)::
+Which model is trained comes from the Hydra config. The final conditioners are trained with
+the final experiment (``conf_jax/experiment/final.yaml``; ``slurm/train_conditioner_*.sh``)::
 
-    python scripts/train_conditioner.py model=rdm \\
-        model.flow_affine=true model.flow_log_inputs=true model.flow_num_hidden=2 \\
-        model.num_bins=12 model.num_mid=128 \\
-        model.training_prior.s_min=0.25 model.training_prior.s_max=3.5 \\
-        model.training_prior.b_min=0.25 model.training_prior.b_max=3.5 \\
-        train_steps=100000 optimizer=adam_cosine_decay_clip
+    python scripts/train_conditioner.py model=rdm +experiment=final
+    python scripts/train_conditioner.py model=crdm +experiment=final
+    python scripts/train_conditioner.py model=crdm +experiment=final model.sampler.dt=0.005
 
-    python scripts/train_conditioner.py model=crdm model.sampler.dt=0.0005 \\
-        model.flow_affine=true model.flow_log_inputs=true model.flow_num_hidden=2 \\
-        model.num_bins=12 model.num_mid=128 \\
-        train_steps=100000 optimizer=adam_cosine_decay_clip
-
-The RDM's training box is passed on the command line; the CRDM's comes from
-``conf_jax/prior/crdm_single_uniform.yaml``. The overrides name the output directory, and
-the box sets the log-input constants and the inference-time clamp, so every job that loads a
-checkpoint must repeat exactly the overrides that trained it.
+which write to ``outputs/<model>/<run_tag>/`` -- the last one to its
+``model.sampler.dt=0.005`` subdirectory. Every job that loads a checkpoint must select the
+same experiment and repeat any further override: they set the architecture, and the training
+box sets the log-input constants and the inference-time clamp.
 
 `model=rdm` trains on ``sample_conditional_wald`` (one accumulator, constant drift, exact
 inverse Gaussian draws); `model=crdm` on ``sample_conditional_crdm_single`` (one accumulator

@@ -1,8 +1,7 @@
 """The conflict-task phenomena the CRDM produces, at three settings of the conflict pulse.
 
-Script version of ``notebooks/create_figure_crdm_phenomena.ipynb``. For each parameter set
-one subject's trials are simulated -- half congruent, half incongruent, sharing one parameter
-vector -- and three summaries are drawn, one row per set:
+For each parameter set one subject's trials are simulated -- half congruent, half
+incongruent, sharing one parameter vector -- and three summaries are drawn, one row per set:
 
   * delta plot: incongruent minus congruent RT quantile (correct trials) against their mean,
   * conditional accuracy function: accuracy per RT quantile bin, per condition,
@@ -117,8 +116,7 @@ def main():
     last = len(ROW_PARAMS) - 1
 
     for i, (row, axrow) in enumerate(zip(ROW_PARAMS, axarr)):
-        # Every row uses the same key, as in the notebook, so the rows differ only by
-        # their parameters.
+        # Every row uses the same key, so the rows differ only by their parameters.
         data = simulate_conditions(key, NUM_TRIALS, **BASE_PARAMS, **row)
 
         plot_delta(data, axrow[0])

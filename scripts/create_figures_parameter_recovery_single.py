@@ -1,17 +1,16 @@
 """Single-subject parameter-recovery figures for the RDM and CRDM.
 
-Script version of ``notebooks/create_figures_parameter_recovery_single.ipynb``, pointed at the
-flows trained for 100k steps with an affine layer, two hidden layers, log-scaled inputs
-and gradient clipping (``optimizer=adam_cosine_decay_clip``). The RDM flow was trained on
-the raised-minimum box (s, b in [0.25, 3.5]); see
-``slurm/parameter_recovery_{rdm,crdm}_multirun_affine_log_deep_clip_box.sh``.
+Reads the final run's single-subject recoveries (``conf_jax/experiment/final.yaml``), from
+``multirun/<model>/<run_tag>/test_num_obs=<N>/``, found through :mod:`confrdm_jax.runs`;
+see ``slurm/parameter_recovery_{rdm,crdm}_single.sh``.
 
 RDM: the neural (``approx``) posterior is compared against the true generating
 parameters and against the analytic (``ref``) posterior. CRDM: there is no analytic
 likelihood, so the neural posterior is compared against the true parameters only.
 
 Subjects whose R-hat is at or above ``RHAT_THRESHOLD``, or whose bulk or tail ESS is at
-or below ``ESS_THRESHOLD``, for any parameter are masked out before summarizing.
+or below ``ESS_THRESHOLD``, for any parameter are masked out before summarizing. Both come
+from ``conf_jax/figures.yaml`` (``convergence.single``), as do the trial counts.
 
 Outputs (written to ``figures/``, each file name ending in
 ``_{RUN_TAG}.png`` so the figures from earlier runs are not overwritten):
@@ -19,7 +18,7 @@ Outputs (written to ``figures/``, each file name ending in
   * parameter_cross_recovery_single_rdm
   * posterior_contraction_single_rdm
   * coverage_single_rdm
-  * c2st_single_rdm                    (skipped until slurm/c2st_recovery.sh has run)
+  * c2st_single_rdm                    (skipped until slurm/c2st_recovery_single.sh has run)
   * parameter_recovery_single_crdm
   * posterior_contraction_single_crdm
   * coverage_single_crdm
@@ -30,7 +29,6 @@ Run from anywhere:
     python scripts/create_figures_parameter_recovery_single.py
 """
 
-from pathlib import Path
 import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,38 +37,24 @@ import seaborn as sns
 import xarray as xr
 from xarray import open_datatree
 
-NUM_OBS = [50, 250, 500, 1000]
-RHAT_THRESHOLD = 1.01
-ESS_THRESHOLD = 400
+from confrdm_jax import runs
 
-ROOT = Path(__file__).resolve().parents[1]
-MULTIRUN = ROOT / "multirun"
-OUTPUTS = ROOT / "outputs"
-OUTDIR = ROOT / "figures"
+SETTINGS = runs.figure_settings()
+NUM_OBS = SETTINGS["num_obs"]
+RHAT_THRESHOLD = SETTINGS["convergence"]["single"]["rhat"]
+ESS_THRESHOLD = SETTINGS["convergence"]["single"]["ess"]
+PALETTE = SETTINGS["palette"]
 
-RUN_TAG = "affine_log_deep_clip_100k"
+OUTDIR = runs.ROOT / "figures"
+RUN_TAG = runs.run_tag()
 
-# The recoveries were launched with model.flow_affine=True / model.flow_log_inputs=True,
-# so Hydra spelled the directory names with "True".
-RUN_DIRS = {
-    "rdm": MULTIRUN
-    / "rdm/model.flow_affine=True/model.flow_log_inputs=True/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128"
-    / "model.training_prior.b_max=3.5/model.training_prior.b_min=0.25"
-    / "model.training_prior.s_max=3.5/model.training_prior.s_min=0.25"
-    / "optimizer=adam_cosine_decay_clip",
-    "crdm": MULTIRUN
-    / "crdm/model.flow_affine=True/model.flow_log_inputs=True/model.flow_num_hidden=2"
-    / "model.num_bins=12/model.num_mid=128"
-    / "model.recovery_prior.v_c_slope_loc=2.5/model.sampler.dt=0.0005"
-    / "optimizer=adam_cosine_decay_clip",
-}
-TRAIN_STEPS = {"rdm": 100000, "crdm": 100000}
+# Written by slurm/c2st_recovery_single.sh next to the test_num_obs=* runs.
+C2ST_PATH = runs.run_dir("rdm", multirun=True) / "c2st.csv"
 
-# Written by slurm/c2st_recovery.sh next to the test_num_obs=* runs.
-C2ST_PATH = RUN_DIRS["rdm"] / "c2st.csv"
 
-PALETTE = ["#d95f02", "#7570b3"]
+def recovery_nc(model, num_obs, kind):
+    """One single-subject recovery file: ``kind`` is ``approx`` (neural) or ``ref``."""
+    return runs.run_dir(model, f"test_num_obs={num_obs}", multirun=True) / f"parameter_recovery_{kind}.nc"
 
 RDM_PARAM_LABELS = {
     "v_intercept": r"$\nu_\text{intercept}$",
@@ -152,15 +136,7 @@ def merge_datatrees(dt_dict):
 
 
 def load(model, kind):
-    run_dir = RUN_DIRS[model]
-    dt_dict = {
-        t: mask_bad_subjects(
-            open_datatree(
-                run_dir / f"test_num_obs={t}/train_steps={TRAIN_STEPS[model]}" / f"parameter_recovery_{kind}.nc"
-            )
-        )
-        for t in NUM_OBS
-    }
+    dt_dict = {t: mask_bad_subjects(open_datatree(recovery_nc(model, t, kind))) for t in NUM_OBS}
     return merge_datatrees(dt_dict)
 
 

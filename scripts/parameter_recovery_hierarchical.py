@@ -24,18 +24,11 @@ on its own with window adaptation; drop any chain whose adaptation collapsed; te
 clouds to the posterior. No tuning is substituted or repaired at any point — see
 :data:`DEGENERATE_STEP_SIZE`.
 
-Must be launched with the same overrides that produced the checkpoint. Those overrides make
-Hydra run in the checkpoint's own directory, which is where ``conditioner_dir`` points by
-default. For the final CRDM conditioner
-(``slurm/parameter_recovery_crdm_hierarchical_affine_log_deep_clip_box.sh``)::
+Must be launched with the same experiment and overrides that produced the checkpoint. Hydra
+then runs in the checkpoint's own directory, which is where ``conditioner_dir`` points by
+default. For the final run (``slurm/parameter_recovery_{rdm,crdm}_hierarchical.sh``)::
 
-    python scripts/parameter_recovery_hierarchical.py model=crdm model.sampler.dt=0.0005 \\
-        model.flow_affine=true model.flow_log_inputs=true model.flow_num_hidden=2 \\
-        model.num_bins=12 model.num_mid=128 \\
-        train_steps=100000 optimizer=adam_cosine_decay_clip
-
-The RDM equivalent, which also repeats the training-box overrides, is
-``slurm/parameter_recovery_rdm_hierarchical_affine_log_deep_clip_box.sh``.
+    python scripts/parameter_recovery_hierarchical.py model=crdm +experiment=final
 
 Writes ``hierarchical_recovery_pop{N}_approx.nc`` per population.
 """
@@ -179,7 +172,7 @@ def _log_convergence(dt, label, max_rhat, min_ess):
     """Check split-R-hat and ESS on the posterior, log them, and record them.
 
     Runs before the ``.nc`` is written so a bad population is visible during the run rather
-    than in the notebook days later — past runs recorded R-hat up to 2.76 and 9.42, and
+    than in the figures days later — past runs recorded R-hat up to 2.76 and 9.42, and
     nothing in the script noticed at the time.
 
     R-hat is the diagnostic that carries weight here. Each "chain" is an independent SMC run
@@ -247,11 +240,11 @@ def _build_population_datatree(
         ``mu`` is **not on the same scale in both groups**. The posterior stores ``exp(mu)``
         (natural scale, matching the subject-level variables) while ``constant_data`` stores
         raw log-space ``mu``, so anything comparing the two must exponentiate the truth first
-        — ``notebooks/create_figures_parameter_recovery_hierarchical.ipynb`` does exactly
+        — ``scripts/create_figures_parameter_recovery_hierarchical.py`` does exactly
         that. ``sigma`` is log-space in both and needs no such correction, since it is a
         standard deviation *of* log-parameters. Subject-level parameters are the well-behaved
         case: ``constant_data`` carries both ``log_theta`` and ``theta``, named for their
-        scales. Changing this is a file-format break — the notebook's compensating ``exp``
+        scales. Changing this is a file-format break — the figure script's compensating ``exp``
         would then double-apply — so it is documented rather than fixed.
 
     Args:

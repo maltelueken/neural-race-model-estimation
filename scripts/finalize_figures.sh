@@ -2,20 +2,29 @@
 # Copy the figures of one run into figures/final/, dropping the run tag from the name:
 #   figures/<name>_<RUN_TAG>.<ext>  ->  figures/final/<name>.<ext>
 #
-# Existing files in figures/final/ with the same name are overwritten.
+# RUN_TAG defaults to the final run's, read from conf_jax/experiment/final.yaml. Existing
+# files in figures/final/ with the same name are overwritten. Figures that do not depend on
+# a run (crdm_phenomena, rdm_crdm_illustration, hierarchical_prior_*) carry no tag and are not
+# copied.
 #
 # Usage:
-#   bash scripts/finalize_figures.sh affine_log_deep_clip_100k
+#   bash scripts/finalize_figures.sh [RUN_TAG]
 
 set -euo pipefail
 
-if [[ $# -ne 1 || -z "$1" ]]; then
-    echo "usage: $0 RUN_TAG" >&2
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ $# -gt 1 ]]; then
+    echo "usage: $0 [RUN_TAG]" >&2
     exit 1
 fi
-run_tag=$1
+run_tag=${1:-$(sed -n 's/^run_tag: *//p' "${root}/conf_jax/experiment/final.yaml")}
+if [[ -z ${run_tag} ]]; then
+    echo "no run_tag found in conf_jax/experiment/final.yaml" >&2
+    exit 1
+fi
 
-figures_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/figures"
+figures_dir="${root}/figures"
 final_dir="${figures_dir}/final"
 
 shopt -s nullglob

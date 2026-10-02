@@ -30,17 +30,17 @@ slow, wide ones.
 
 Usage
 -----
-``conf_jax/compare_densities.yaml`` already points at the final conditioners: the RDM flow
-and the CRDM flows at dt = 0.05, 0.005 and 0.0005, all affine, log-input, two-layer, clipped
-and trained for 100k steps. So the default run is just::
+``conf_jax/compare_densities.yaml`` already points at the final run's conditioners
+(``conf_jax/experiment/final.yaml``): the RDM flow and the CRDM flows at dt = 0.05, 0.005 and
+0.0005, found through :mod:`confrdm_jax.runs`. So the default run is just::
 
     python scripts/compare_neural_densities.py
 
 To score a different checkpoint, override the paths::
 
     python scripts/compare_neural_densities.py \\
-        wald.conditioner_path=outputs/rdm/<overrides>/conditioner \\
-        "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/<overrides>/conditioner}]"
+        wald.conditioner_path=outputs/rdm/<run_tag>/conditioner \\
+        "crdm.conditioners=[{dt: 0.0005, path: outputs/crdm/<run_tag>/conditioner}]"
 
 Each conditioner is rebuilt from its checkpoint's sidecar (depth, affine layout, spline
 settings, log-input scaling, width, bins) and evaluated through
@@ -65,6 +65,7 @@ from eamax.accumulators import inv_gauss_logpdf, inv_gauss_logsf, solve_volterra
 from eamax.flows.checkpoint import read_metadata
 
 from confrdm_jax import configure_jax
+from confrdm_jax import runs  # noqa: F401  (registers the `run_dir` resolver the config uses)
 from confrdm_jax.flows_affine import load_conditioner, make_mlp_conditioner, spline_flow
 from confrdm_jax.specs import CRDM_CONTEXT_NAMES, WALD_CONTEXT_NAMES
 

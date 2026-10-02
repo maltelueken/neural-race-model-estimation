@@ -1,7 +1,7 @@
 """Neural vs. reference density accuracy and timing, from ``compare_neural_densities.py``.
 
-Script version of ``notebooks/create_figures_density_comparison.ipynb``. Reads
-``outputs/compare_densities/density_comparison.nc`` and plots, per parameter value:
+Reads ``outputs/compare_densities/density_comparison.nc``, written for the final run's flows,
+and plots, per parameter value:
 
   * KL(reference || neural) in nats -- the expected per-trial log-likelihood error, with
     the mass beyond the evaluation grid entering as a censored survival term;
@@ -22,19 +22,18 @@ Run from anywhere:
     python scripts/create_figures_density_comparison.py
 """
 
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import xarray as xr
 
-RUN_TAG = "affine_log_deep_clip_100k"
+from confrdm_jax import runs
 
-ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "outputs/compare_densities/density_comparison.nc"
-OUTDIR = ROOT / "figures"
+RUN_TAG = runs.run_tag()
+
+RESULTS = runs.ROOT / "outputs/compare_densities/density_comparison.nc"
+OUTDIR = runs.ROOT / "figures"
 
 DT_VALUES = [0.05, 0.005, 0.0005]
 

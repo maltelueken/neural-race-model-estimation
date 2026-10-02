@@ -1,7 +1,7 @@
 """Single-subject parameter recovery for a trained conditioner.
 
 Simulates independent data sets from the recovery prior, fits each one with NUTS, and writes
-the posteriors to netCDF for the notebooks to analyse. Each data set is fit independently —
+the posteriors to netCDF for the figure scripts to analyse. Each data set is fit independently —
 they are stored under a ``subject`` coordinate for ArviZ's benefit, but nothing is shared
 between them. For the genuinely multi-subject model see
 ``parameter_recovery_hierarchical.py``.
@@ -21,20 +21,16 @@ then adapted on its own by :func:`eamax.inference.warmup.window_adaptation` and 
 the tuning that comes back, unmodified. A collapsed step size is reported, not repaired —
 see :data:`DEGENERATE_STEP_SIZE`.
 
-Must be launched with the same overrides that produced the checkpoint — nothing in the
-weights records the architecture — and pointed at it with ``conditioner_dir``. For the final
-RDM conditioner (``slurm/parameter_recovery_rdm_multirun_affine_log_deep_clip_box.sh``)::
+Must be launched with the same experiment and overrides that produced the checkpoint —
+nothing in the weights records the architecture — and pointed at it with
+``conditioner_dir``, because a sweep runs in its own directory. For the final run
+(``slurm/parameter_recovery_{rdm,crdm}_single.sh``)::
 
-    python scripts/parameter_recovery.py --multirun model=rdm \\
-        model.flow_affine=true model.flow_log_inputs=true model.flow_num_hidden=2 \\
-        model.num_bins=12 model.num_mid=128 \\
-        model.training_prior.s_min=0.25 model.training_prior.s_max=3.5 \\
-        model.training_prior.b_min=0.25 model.training_prior.b_max=3.5 \\
-        train_steps=100000 optimizer=adam_cosine_decay_clip \\
-        test_num_obs=50,250,500,1000 \\
-        conditioner_dir="outputs/rdm/model.flow_affine\\=true/model.flow_log_inputs\\=true/model.flow_num_hidden\\=2/model.num_bins\\=12/model.num_mid\\=128/model.training_prior.b_max\\=3.5/model.training_prior.b_min\\=0.25/model.training_prior.s_max\\=3.5/model.training_prior.s_min\\=0.25/optimizer\\=adam_cosine_decay_clip/train_steps\\=100000"
+    python scripts/parameter_recovery.py --multirun model=rdm +experiment=final \\
+        test_num_obs=$(python -m confrdm_jax.runs num-obs) \\
+        conditioner_dir=$(python -m confrdm_jax.runs run-dir rdm)
 
-The CRDM equivalent is ``slurm/parameter_recovery_crdm_multirun_affine_log_deep_clip_box.sh``.
+which writes to ``multirun/rdm/<run_tag>/test_num_obs=<N>/``.
 
 Outputs ``parameter_recovery_approx.nc`` and, when enabled, ``parameter_recovery_ref.nc`` in
 the Hydra run directory.
@@ -146,7 +142,7 @@ def _build_recovery_datatree(samples, data, true_params, prior_ds, param_names, 
         ``xr.DataTree`` with posterior, sample_stats, observed_data, constant_data and prior
         groups, ready
         to save as netCDF. Data sets are stored under a ``subject`` coordinate because that
-        is what ArviZ and the notebooks expect, though they are independent fits rather than
+        is what ArviZ and the figure scripts expect, though they are independent fits rather than
         subjects of one model.
     """
     num_subjects = data.shape[0]

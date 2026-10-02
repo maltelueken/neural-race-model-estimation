@@ -1,7 +1,14 @@
+# Single-subject CRDM recovery prior.
+#
+# v_c_slope_loc = 2.5 is what every single-subject CRDM recovery was run with (it used to be
+# passed on the command line against a default of 4.0) and puts the slope near the
+# hierarchical prior's median of 2.51. This prior puts about 3% of datasets below the flow's
+# training box -- tau < 0.01 in 1.4%, b < 0.25 in 1.4%, s_true < 0.25 in 0.4% -- where the
+# flow's inputs are clamped, so recovery for those few datasets is not exact.
 _target_: confrdm_jax.priors.create_crdm_prior_informed
 v_c_intercept_loc: 1.0
 v_c_intercept_scale: 0.25
-v_c_slope_loc: 4.0
+v_c_slope_loc: 2.5
 v_c_slope_scale: 0.5
 amp_loc: 0.3
 amp_scale: 0.05

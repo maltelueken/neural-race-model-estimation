@@ -18,8 +18,10 @@ over the full set of prior draws, and dropping fits conditions on the data. The 
 data sets failing the recovery figures' convergence thresholds is printed instead. As in
 the CRDM recovery figures, the CRDM's ``t0`` is not shown.
 
-Reads the same runs as ``create_figures_parameter_recovery_single.py`` and writes
-``figures/sbc_single_{rdm,crdm}_{RUN_TAG}.png``.
+Reads the same runs as ``create_figures_parameter_recovery_single.py``, whose loading and
+plotting helpers it reuses, and writes ``figures/sbc_single_{rdm,crdm}_{RUN_TAG}.png``. The
+trial counts and the convergence thresholds it reports against are the single-subject ones
+in ``conf_jax/figures.yaml``.
 
 Run from anywhere:
     python scripts/create_figures_sbc_single.py
@@ -38,13 +40,21 @@ from matplotlib.lines import Line2D
 from xarray import open_datatree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import create_figures_parameter_recovery_single as recovery
+import create_figures_parameter_recovery_single as recovery  # noqa: E402
+
+from confrdm_jax import runs  # noqa: E402
+
+SETTINGS = runs.figure_settings()
+NUM_OBS = SETTINGS["num_obs"]
+RHAT_THRESHOLD = SETTINGS["convergence"]["single"]["rhat"]
+ESS_THRESHOLD = SETTINGS["convergence"]["single"]["ess"]
+PALETTE = SETTINGS["palette"]
 
 CI_PROB = 0.95
 NUM_BAND_SIMULATIONS = 1000
 
 KIND_LABELS = {"approx": "Neural", "ref": "Analytic"}
-KIND_COLORS = {"approx": recovery.PALETTE[1], "ref": recovery.PALETTE[0]}
+KIND_COLORS = {"approx": PALETTE[1], "ref": PALETTE[0]}
 # The neural curve is the one under test, so it is drawn over the analytic one.
 KIND_ZORDER = {"approx": 3, "ref": 2}
 
@@ -55,10 +65,10 @@ KIND_ZORDER = {"approx": 3, "ref": 2}
 def count_unconverged(dt, param_names):
     """Number of data sets failing R-hat or bulk/tail ESS on any parameter."""
     posterior = dt["posterior"].ds[param_names]
-    rhat_ok = (az.rhat(posterior).to_array(dim="param") < recovery.RHAT_THRESHOLD).all(dim="param")
+    rhat_ok = (az.rhat(posterior).to_array(dim="param") < RHAT_THRESHOLD).all(dim="param")
     ess_ok = xr.concat(
         [
-            az.ess(posterior, method=method).to_array(dim="param") > recovery.ESS_THRESHOLD
+            az.ess(posterior, method=method).to_array(dim="param") > ESS_THRESHOLD
             for method in ["bulk", "tail"]
         ],
         dim="method",
@@ -71,11 +81,9 @@ def load_pit(model, kind):
 
     Returns the Dataset and the number of unconverged data sets per ``num_obs``.
     """
-    run_dir = recovery.RUN_DIRS[model]
     pits, unconverged = [], {}
-    for t in recovery.NUM_OBS:
-        path = run_dir / f"test_num_obs={t}/train_steps={recovery.TRAIN_STEPS[model]}" / f"parameter_recovery_{kind}.nc"
-        dt = open_datatree(path)
+    for t in NUM_OBS:
+        dt = open_datatree(recovery.recovery_nc(model, t, kind))
         param_names = list(dt.attrs["param_names"])
         posterior = dt["posterior"].ds[param_names]
         theta = dt["constant_data"].ds["theta"]
@@ -85,13 +93,13 @@ def load_pit(model, kind):
             ),
         )
         unconverged[t] = count_unconverged(dt, param_names)
-    ds = xr.concat(pits, dim=xr.DataArray(recovery.NUM_OBS, dims="num_obs"))
+    ds = xr.concat(pits, dim=xr.DataArray(NUM_OBS, dims="num_obs"))
     return ds, unconverged
 
 
 def report(model, kind, ds, unconverged):
     print(f"{model} {kind}:")
-    for t in recovery.NUM_OBS:
+    for t in NUM_OBS:
         pit = ds.sel(num_obs=t)
         means = ", ".join(f"{p}={pit[p].mean().item():.3f}" for p in ds.data_vars)
         print(
@@ -114,7 +122,7 @@ def pit_ecdf_df(pits, labels, exclude=()):
         for p in ds.data_vars:
             if p in exclude:
                 continue
-            for t in recovery.NUM_OBS:
+            for t in NUM_OBS:
                 vals = np.sort(ds[p].sel(num_obs=t).values)
                 x, ecdf, lower, upper = ecdf_pit(vals, CI_PROB, NUM_BAND_SIMULATIONS)
                 frames.append(

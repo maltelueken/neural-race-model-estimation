@@ -15,8 +15,9 @@ Two cases, matching the two recovery scripts:
 - ``single``: each recovered dataset is an independent single-subject fit
   (``parameter_recovery.py``).  One C2ST is run **per subject**, comparing the
   joint posterior over all parameters for that subject.  This is repeated
-  separately for each number of trials (one recovery directory per trial count,
-  listed in ``c2st.single_recovery_dirs``).
+  separately for each number of trials: one recovery directory per trial count,
+  listed in ``c2st.single_recovery_dirs`` or, by default, every ``test_num_obs=*``
+  directory under ``c2st.recovery_dir`` -- the layout a single-subject sweep writes.
 - ``hierarchical``: one joint model is fit to all subjects at once
   (``parameter_recovery_hierarchical.py``).  One C2ST is run for the
   **entire model**, per population file, comparing the joint posterior over
@@ -26,23 +27,19 @@ Configuration lives under the ``c2st`` group in ``conf_jax/config.yaml``.
 
 Examples
 --------
-Both use the recoveries of the final RDM conditioner (affine, log inputs, two hidden
-layers, gradient clipping, 100k steps, s and b box [0.25, 3.5]); ``slurm/c2st_recovery.sh``
-and ``slurm/c2st_recovery_hierarchical.sh`` give the full paths. ``<flow>`` abbreviates
-``model.flow_affine=...`` through ``optimizer=adam_cosine_decay_clip``. The multirun
-directories spell the booleans ``True``, the single-run ones ``true``.
+Both use the final run's RDM recoveries (``conf_jax/experiment/final.yaml``), located with
+:mod:`confrdm_jax.runs`; see ``slurm/c2st_recovery_{single,hierarchical}.sh``.
 
-Single-subject (one C2ST per subject, separately per number of trials)::
+Single-subject (one C2ST per subject, separately per number of trials; the CSV goes next to
+the ``test_num_obs=*`` runs)::
 
     python scripts/c2st_recovery.py c2st.mode=single \\
-        "c2st.recovery_dir='multirun/rdm/<flow>'" \\
-        "c2st.single_recovery_dirs=['multirun/rdm/<flow>/test_num_obs=50/train_steps=100000', \\
-                                    'multirun/rdm/<flow>/test_num_obs=1000/train_steps=100000']"
+        c2st.recovery_dir=$(python -m confrdm_jax.runs run-dir rdm --multirun)
 
 Hierarchical (one C2ST per population for the whole model)::
 
     python scripts/c2st_recovery.py c2st.mode=hierarchical \\
-        c2st.recovery_dir=outputs/rdm/<flow>/train_steps=100000
+        c2st.recovery_dir=$(python -m confrdm_jax.runs run-dir rdm)
 """
 
 import csv
@@ -165,8 +162,12 @@ def main(cfg):
     output_path = recovery_dir / c2st_cfg["output_file"]
 
     if c2st_cfg["mode"] == "single":
-        # One recovery dir per number of trials; default to the single dir.
-        single_dirs = c2st_cfg["single_recovery_dirs"] or [c2st_cfg["recovery_dir"]]
+        # One recovery dir per number of trials: as listed, else the sweep's test_num_obs=*
+        # subdirectories, else recovery_dir itself.
+        single_dirs = list(c2st_cfg["single_recovery_dirs"]) or sorted(
+            (str(p) for p in recovery_dir.glob("test_num_obs=*") if p.is_dir()),
+            key=lambda p: int(p.rsplit("=", 1)[1]),
+        ) or [str(recovery_dir)]
 
         rows = []
         for single_dir in single_dirs:
