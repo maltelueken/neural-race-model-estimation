@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from eamax.accumulators import inv_gauss_logpdf, inv_gauss_logsf
+from eamax.accumulators import VolterraPulsedWald, Wald, inv_gauss_logpdf, inv_gauss_logsf
 from eamax.numerics import MIN_P
 
 from confrdm_jax.likelihoods import (
@@ -23,7 +23,9 @@ from confrdm_jax.likelihoods import (
     create_rdm_likelihood_factory_approx,
     create_rdm_two_accumulators_likelihood,
 )
+from confrdm_jax.likelihoods import _hybrid_race
 from confrdm_jax.simulators import simulate_crdm, simulate_rdm
+from confrdm_jax.specs import crdm_spec, make_design
 
 LOG_FLOOR = float(jnp.log(MIN_P))
 
@@ -129,6 +131,62 @@ def test_crdm_reduces_to_the_rdm_as_the_pulse_vanishes(rdm_theta):
         np.asarray(create_rdm_two_accumulators_likelihood(data)(rdm_theta)),
         atol=2e-3,
     )
+
+
+def _per_trial_volterra(data, dt, t_max, censor_t_max=None):
+    """The Volterra hybrid race solved once per trial, by `eamax`'s accumulator as it stands."""
+    pulsed = VolterraPulsedWald(dt=dt, t_max=t_max)
+    return lambda theta: _hybrid_race(
+        crdm_spec(), pulsed, Wald(), theta, make_design(data), t_max=censor_t_max,
+    )
+
+
+def test_volterra_per_condition_matches_per_trial(crdm_theta):
+    # Solving once per condition and interpolating is a restructuring, not an approximation:
+    # it must reproduce the per-trial solve exactly, in both conditions, value and gradient.
+    data = simulate_crdm(jax.random.key(7), crdm_theta, 40, dt=0.002, t_max=2.0)
+    assert set(np.asarray(data[:, 2]).tolist()) == {0.0, 1.0}
+    per_condition = create_crdm_likelihood_volterra(data, dt=0.005, t_max=2.0)
+    per_trial = _per_trial_volterra(data, dt=0.005, t_max=2.0)
+
+    np.testing.assert_allclose(
+        np.asarray(per_condition(crdm_theta)), np.asarray(per_trial(crdm_theta)), rtol=1e-10,
+    )
+    grad = jax.grad(lambda theta: jnp.sum(per_condition(theta)))(crdm_theta)
+    grad_ref = jax.grad(lambda theta: jnp.sum(per_trial(theta)))(crdm_theta)
+    assert jnp.all(jnp.isfinite(grad))
+    np.testing.assert_allclose(np.asarray(grad), np.asarray(grad_ref), rtol=1e-8)
+
+
+def test_volterra_trimmed_grid_changes_nothing(crdm_theta):
+    # The recursion is causal, so a grid that stops at the longest RT gives the same values
+    # as one that runs to the simulator's horizon.
+    data = simulate_crdm(jax.random.key(8), crdm_theta, 40, dt=0.002, t_max=2.0)
+    trimmed = create_crdm_likelihood_volterra(data, dt=0.005)
+    full = create_crdm_likelihood_volterra(data, dt=0.005, t_max=4.0)
+    np.testing.assert_allclose(
+        np.asarray(trimmed(crdm_theta)), np.asarray(full(crdm_theta)), rtol=1e-12,
+    )
+
+
+def test_volterra_grid_reaches_the_censoring_horizon(crdm_theta):
+    # A censored trial is scored by survival at decision time `censor_t_max`, beyond every
+    # observed RT; a grid trimmed to the RTs alone would hold its endpoint there instead.
+    data = simulate_crdm(jax.random.key(9), crdm_theta, 20, dt=0.002, t_max=2.0)
+    censored = data.at[0, 0].set(-1.0).at[0, 1].set(-1.0)
+    assert float(jnp.max(censored[:, 0])) < 2.0
+
+    per_condition = create_crdm_likelihood_volterra(censored, dt=0.005, censor_t_max=2.0)
+    per_trial = _per_trial_volterra(censored, dt=0.005, t_max=2.0, censor_t_max=2.0)
+    np.testing.assert_allclose(
+        np.asarray(per_condition(crdm_theta)), np.asarray(per_trial(crdm_theta)), rtol=1e-10,
+    )
+
+
+def test_volterra_horizon_needs_concrete_data(crdm_theta):
+    data = simulate_crdm(jax.random.key(10), crdm_theta, 10, dt=0.002, t_max=2.0)
+    with pytest.raises(TypeError, match="pass t_max explicitly"):
+        jax.jit(lambda d: create_crdm_likelihood_volterra(d, dt=0.005)(crdm_theta))(data)
 
 
 def test_censored_trials_are_scored_by_survival(crdm_theta, crdm_conditioner):
