@@ -25,9 +25,15 @@ chain with the deepest tree. Every chain still adapts on its own, as
 ``O((max_rt / dt)^2)`` and the number of trials barely matters. ``list`` orders the work
 items longest grid first, which is what packs a node best.
 
-Usage (``slurm/parameter_recovery_crdm_volterra.sh`` runs ``list`` then ``run`` per item)::
+**Memory, not cores, is what limits a node.** Reverse mode through the solver keeps several
+``num_steps^2`` kernels, so a chain peaks at about 3 GB on a 3000-step grid and 12 GB on a
+6400-step one. ``pool`` therefore starts a chain only when its estimated peak fits the
+node's memory (see :func:`cmd_pool`); one process per core would overcommit it.
+
+Usage (``slurm/parameter_recovery_crdm_volterra.sh`` runs ``pool`` then ``merge``)::
 
     python scripts/parameter_recovery_volterra.py list  --num-obs 500 [--dt 0.0005]
+    python scripts/parameter_recovery_volterra.py pool  --num-obs 500 [--processes 192]
     python scripts/parameter_recovery_volterra.py run   --num-obs 500 --dataset 17 --chain 2
     python scripts/parameter_recovery_volterra.py merge --num-obs 500
 
@@ -107,20 +113,120 @@ def observed_data(tree):
 # --------------------------------------------------------------------------------------- #
 
 
-def cmd_list(args):
-    """Print the unfinished work items as ``num_obs dataset chain``, longest grid first."""
+#: Peak resident memory of one chain, in GB, as ``a + b * num_steps**2``: measured during
+#: window adaptation at a 3053-step grid (3.1 GB) and for a bare value-and-gradient at 1500
+#: and 3053 steps (0.65 / 2.0 GB). Reverse mode keeps several ``num_steps^2`` kernels per
+#: solve, so the quadratic term is what fills a node.
+MEMORY_BASE_GB = 0.3
+MEMORY_PER_STEP2_GB = 3.0e-7
+
+
+def chain_memory_gb(num_steps):
+    """Estimated peak memory of one chain on a `num_steps` grid."""
+    return MEMORY_BASE_GB + MEMORY_PER_STEP2_GB * num_steps**2
+
+
+def work_items(num_obs_list, dt):
+    """Unfinished ``(num_steps, num_obs, dataset, chain)``, longest grid first."""
     items = []
-    for num_obs in args.num_obs:
+    for num_obs in num_obs_list:
         tree = load_recovery(num_obs)
         rt = tree["observed_data"]["rt"].values
         num_chains = tree["posterior"].sizes["chain"]
-        grid = np.ceil(np.where(rt > 0, rt, 0.0).max(axis=1) / args.dt)
+        grid = np.ceil(np.where(rt > 0, rt, 0.0).max(axis=1) / dt - 1e-9).astype(int)
         for dataset in range(rt.shape[0]):
             for chain in range(num_chains):
-                if not chain_file(num_obs, args.dt, dataset, chain).exists():
-                    items.append((grid[dataset], num_obs, dataset, chain))
-    for _, num_obs, dataset, chain in sorted(items, key=lambda item: -item[0]):
+                if not chain_file(num_obs, dt, dataset, chain).exists():
+                    items.append((int(grid[dataset]), num_obs, dataset, chain))
+    return sorted(items, key=lambda item: -item[0])
+
+
+def cmd_list(args):
+    """Print the unfinished work items as ``num_obs dataset chain``, longest grid first."""
+    for _, num_obs, dataset, chain in work_items(args.num_obs, args.dt):
         print(num_obs, dataset, chain)
+
+
+# --------------------------------------------------------------------------------------- #
+# pool
+# --------------------------------------------------------------------------------------- #
+
+
+def available_memory_gb():
+    """``MemAvailable`` from ``/proc/meminfo``, in GB."""
+    with open("/proc/meminfo") as meminfo:
+        for line in meminfo:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1e6
+    raise RuntimeError("no MemAvailable in /proc/meminfo")
+
+
+def cmd_pool(args):
+    """Run every unfinished chain as its own process, within a core and a memory budget.
+
+    A plain ``xargs -P <cores>`` overcommits memory: the work list is longest grid first, so
+    the first wave is every large grid at once, and at dt = 0.0005 that wants several times a
+    node's memory -- the processes then die with bus errors and segfaults rather than a clean
+    out-of-memory kill. Here a chain starts only when its estimated peak
+    (:func:`chain_memory_gb`, times `--memory-margin`) fits in what is left of the budget;
+    when the next large grid does not fit, smaller ones fill the free cores meanwhile.
+    """
+    import subprocess
+
+    budget = args.memory_gb or args.memory_fraction * available_memory_gb()
+    pending = [
+        (args.memory_margin * chain_memory_gb(num_steps), num_steps, num_obs, dataset, chain)
+        for num_steps, num_obs, dataset, chain in work_items(args.num_obs, args.dt)
+    ]
+    too_big = [item for item in pending if item[0] > budget]
+    if too_big:
+        raise RuntimeError(
+            f"{len(too_big)} chains need more than the {budget:.0f} GB budget on their own "
+            f"(largest {too_big[0][0]:.0f} GB); run them on a node with more memory.",
+        )
+    log_dir = Path(args.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "%d chains, %d processes at a time within %.0f GB (largest chain %.1f GB)",
+        len(pending), args.processes, budget, pending[0][0] if pending else 0.0,
+    )
+
+    running = {}  # Popen -> (memory, num_obs, dataset, chain, log handle)
+    failed = 0
+    while pending or running:
+        in_use = sum(entry[0] for entry in running.values())
+        # First fit, largest first: start whatever fits in the free cores and memory.
+        index = 0
+        while index < len(pending) and len(running) < args.processes:
+            memory, _, num_obs, dataset, chain = pending[index]
+            if in_use + memory > budget:
+                index += 1
+                continue
+            pending.pop(index)
+            log = open(log_dir / f"n{num_obs}_d{dataset:03d}_c{chain}.log", "w")  # noqa: SIM115
+            process = subprocess.Popen(
+                [sys.executable, __file__, "run", "--num-obs", str(num_obs),
+                 "--dataset", str(dataset), "--chain", str(chain), "--dt", str(args.dt),
+                 "--device", args.device],
+                stdout=log, stderr=subprocess.STDOUT,
+            )
+            running[process] = (memory, num_obs, dataset, chain, log)
+            in_use += memory
+
+        time.sleep(args.poll_seconds)
+        for process in [p for p in running if p.poll() is not None]:
+            memory, num_obs, dataset, chain, log = running.pop(process)
+            log.close()
+            if process.returncode != 0:
+                failed += 1
+                logger.warning(
+                    "num_obs=%d data set %d chain %d exited with %d; see %s",
+                    num_obs, dataset, chain, process.returncode, log.name,
+                )
+        if not running and pending:
+            raise RuntimeError("nothing running and nothing fits; the budget check failed")
+
+    logger.info("pool finished, %d chains failed", failed)
 
 
 # --------------------------------------------------------------------------------------- #
@@ -356,11 +462,23 @@ def main(argv=None):
     def num_obs_list(text):
         return [int(n) for n in text.split(",")]
 
-    for name in ("list", "merge"):
-        sub = commands.add_parser(name)
+    subs = {}
+    for name in ("list", "pool", "merge"):
+        sub = subs[name] = commands.add_parser(name)
         sub.add_argument("--num-obs", type=num_obs_list, required=True,
                          help="comma-separated trial counts, e.g. 50,250,500,1000")
         sub.add_argument("--dt", type=float, default=0.0005)
+
+    pool = subs["pool"]
+    pool.add_argument("--processes", type=int, default=os.cpu_count())
+    pool.add_argument("--memory-gb", type=float, default=None,
+                      help="memory budget; default --memory-fraction of MemAvailable")
+    pool.add_argument("--memory-fraction", type=float, default=0.85)
+    pool.add_argument("--memory-margin", type=float, default=1.25,
+                      help="safety factor on the per-chain estimate")
+    pool.add_argument("--log-dir", default="slurm/logs/volterra")
+    pool.add_argument("--device", default="cpu")
+    pool.add_argument("--poll-seconds", type=float, default=10.0)
 
     run = commands.add_parser("run")
     run.add_argument("--num-obs", type=int, required=True)
@@ -375,7 +493,7 @@ def main(argv=None):
         level=logging.INFO, format=f"%(asctime)s [{os.getpid()}] %(message)s", stream=sys.stdout,
     )
     logging.getLogger("absl").setLevel(logging.ERROR)
-    {"list": cmd_list, "run": cmd_run, "merge": cmd_merge}[args.command](args)
+    {"list": cmd_list, "pool": cmd_pool, "run": cmd_run, "merge": cmd_merge}[args.command](args)
 
 
 if __name__ == "__main__":
