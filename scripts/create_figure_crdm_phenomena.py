@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from scipy import stats  # noqa: E402
 
+from confrdm_jax.plots import save_figure  # noqa: E402
 from confrdm_jax.simulators import simulate_crdm  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,7 +140,7 @@ def main():
     fig.tight_layout()
     OUTDIR.mkdir(exist_ok=True)
     out = OUTDIR / "crdm_phenomena.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    save_figure(fig, out, dpi=150)
     print(f"saved {out}")
 
 

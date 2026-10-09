@@ -45,6 +45,7 @@ from confrdm_jax.likelihoods import (  # noqa: E402
     create_rdm_likelihood_factory_approx,
     create_rdm_two_accumulators_likelihood,
 )
+from confrdm_jax.plots import save_figure  # noqa: E402
 from confrdm_jax.specs import crdm_spec, make_design  # noqa: E402
 
 RUN_TAG = runs.run_tag()
@@ -306,9 +307,8 @@ def plot(rows):
     fig.tight_layout()
 
     out = OUTDIR / f"likelihood_comparison_{RUN_TAG}.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    save_figure(fig, out, dpi=150)
     print(f"saved {out}")
-    plt.close(fig)
 
 
 def main():

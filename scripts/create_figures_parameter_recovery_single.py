@@ -38,6 +38,7 @@ import xarray as xr
 from xarray import open_datatree
 
 from confrdm_jax import runs
+from confrdm_jax.plots import save_figure
 
 SETTINGS = runs.figure_settings()
 NUM_OBS = SETTINGS["num_obs"]
@@ -248,10 +249,8 @@ def hide_inner_xticklabels(g):
 
 def save(fig_or_grid, name):
     out = OUTDIR / f"{name}_{RUN_TAG}.png"
-    fig_or_grid.savefig(out)
+    save_figure(fig_or_grid, out, dpi=100)
     print(f"saved {out}")
-    fig = getattr(fig_or_grid, "figure", fig_or_grid)
-    plt.close(fig)
 
 
 # --- RDM: neural vs. true and vs. analytic --------------------------------------------

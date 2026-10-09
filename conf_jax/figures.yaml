@@ -16,6 +16,10 @@ convergence:
   # Parameters with R-hat >= rhat or bulk/tail ESS <= ess.
   hierarchical: {rhat: 1.05, ess: 400}
 
+# Minimum width and height of every figure, in pixels. confrdm_jax.plots.save_figure raises
+# the dpi of a figure that would come out smaller, and refuses to finish if it still does.
+min_pixels: 900
+
 # Two-colour palette of the single-subject recovery and SBC figures. Note that the scripts do
 # not assign it consistently: the recovery figures' hue order puts the neural posterior on the
 # first colour, the SBC figure puts it on the second.

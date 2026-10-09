@@ -32,6 +32,8 @@ import numpy as np  # noqa: E402
 from eamax.accumulators import normalized_gamma_derivative  # noqa: E402
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # noqa: E402
 
+from confrdm_jax.plots import save_figure  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 OUTDIR = ROOT / "figures"
 
@@ -237,7 +239,7 @@ def main():
 
     OUTDIR.mkdir(exist_ok=True)
     out = OUTDIR / "rdm_crdm_illustration.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    save_figure(fig, out, dpi=150)
     print(f"saved {out}")
 
 

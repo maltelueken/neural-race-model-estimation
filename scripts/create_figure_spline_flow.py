@@ -45,6 +45,7 @@ from confrdm_jax.flows_affine import (  # noqa: E402
     spline_flow,
     spline_knots,
 )
+from confrdm_jax.plots import save_figure  # noqa: E402
 
 RUN_TAG = runs.run_tag()
 
@@ -246,9 +247,8 @@ def main():
     fig.tight_layout()
     OUTDIR.mkdir(exist_ok=True)
     out = OUTDIR / f"spline_flow_transformation_{RUN_TAG}.png"
-    fig.savefig(out, dpi=200, bbox_inches="tight")
+    save_figure(fig, out)
     print(f"saved {out}")
-    plt.close(fig)
 
 
 if __name__ == "__main__":

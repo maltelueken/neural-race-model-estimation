@@ -35,6 +35,7 @@ from omegaconf import OmegaConf
 from xarray import open_datatree
 
 from confrdm_jax import runs
+from confrdm_jax.plots import save_figure
 
 NUM_POPS = OmegaConf.load(runs.CONF_DIR / "config.yaml")["hierarchical_recovery"]["test_num_populations"]
 _CONVERGENCE = runs.figure_settings()["convergence"]["hierarchical"]
@@ -265,9 +266,8 @@ def set_identity_lims(g, lims, row_is_sigma=lambda row: False):
 
 def save(g, name):
     out = OUTDIR / f"{name}_{RUN_TAG}.png"
-    g.savefig(out, dpi=200, bbox_inches="tight")
+    save_figure(g, out)
     print(f"saved {out}")
-    plt.close(g.figure)
 
 
 def relabel(df, param_labels):

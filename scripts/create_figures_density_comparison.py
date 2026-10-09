@@ -29,6 +29,7 @@ import seaborn as sns
 import xarray as xr
 
 from confrdm_jax import runs
+from confrdm_jax.plots import save_figure
 
 RUN_TAG = runs.run_tag()
 
@@ -127,9 +128,8 @@ def plot_divergences(wald, crdm):
     g.add_legend(title=r"Training $dt$", loc="lower center", ncols=4, bbox_to_anchor=(0.45, 1.0))
 
     out = OUTDIR / f"divergence_rdm_crdm_{RUN_TAG}.png"
-    g.savefig(out, dpi=200, bbox_inches="tight")
+    save_figure(g, out)
     print(f"saved {out}")
-    plt.close(g.figure)
 
 
 def timing_table(wald, crdm):
@@ -204,9 +204,8 @@ def plot_timing(df):
     fig.tight_layout()
 
     out = OUTDIR / f"timing_comparison_{RUN_TAG}.png"
-    fig.savefig(out, dpi=200, bbox_inches="tight")
+    save_figure(fig, out)
     print(f"saved {out}")
-    plt.close(fig)
 
 
 def main():
