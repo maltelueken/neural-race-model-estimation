@@ -4,7 +4,8 @@ Two panels share the y-axis:
 
   * left, the racing diffusion model: two accumulators with constant drifts v_0 and v_1,
   * right, the conflict RDM: the same race with a gamma-shaped conflict pulse eta(t) added
-    to accumulator 1's drift (the congruent case), with the pulse itself in an inset.
+    to accumulator 1's drift (the congruent case), with the pulse itself in an inset. The
+    amplitude zeta is shaded there as the area under eta(t) up to its zero crossing tau.
 
 Each panel shows a handful of simulated trials, each drawn up to its decision, and the mean
 (noise-free) trajectory of each accumulator.
@@ -137,7 +138,13 @@ def draw_accumulation_panel(ax, trials, t, x0_mean, x1_mean, b):
 
 
 def draw_pulse_inset(ax, t):
-    """The conflict pulse eta(t), with its amplitude and time constant marked."""
+    """The conflict pulse eta(t), with its amplitude and time constant marked.
+
+    zeta is not a height on this curve: it is the peak of the integrated pulse C(t), whose
+    derivative eta(t) is. With the shape fixed at 2, C(t) peaks at t = tau, where eta(t)
+    crosses zero, so zeta = C(tau) is the area under eta(t) between 0 and tau. That area is
+    shaded and labelled.
+    """
     ax_inset = inset_axes(
         ax, width="33%", height="38%",
         bbox_to_anchor=(0.65, 0.1, 1, 1), bbox_transform=ax.transAxes, loc="lower left",
@@ -148,11 +155,13 @@ def draw_pulse_inset(ax, t):
     ax_inset.plot(t_plot, pulse, color=C1_DARK, lw=2.0)
     ax_inset.axhline(0, color="gray", lw=0.8, ls="--")
 
-    peak = int(np.argmax(pulse[1:]) + 1)  # skip t = 0
+    # The positive lobe, whose area is zeta.
+    lobe = t_plot <= TAU
+    ax_inset.fill_between(t_plot[lobe], pulse[lobe], color=C1, alpha=0.3, lw=0)
     ax_inset.annotate(
-        r"$\zeta=%.2f$" % AMP,
-        xy=(t_plot[peak], pulse[peak]),
-        xytext=(t_plot[peak] + 0.10, pulse[peak] * 0.65),
+        r"area $\zeta = %.2f$" % AMP,
+        xy=(TAU * 0.3, pulse.max() * 0.15),
+        xytext=(TAU + 0.08, pulse.max() * 0.6),
         fontsize=10, color=C1_DARK,
         arrowprops=dict(arrowstyle="->", color=C1_DARK, lw=1.0),
     )
