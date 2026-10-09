@@ -3,7 +3,43 @@
 All notable changes to this project are documented in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.0.0]
+## [2.0.1] - 2026-10-09
+
+Changes from `v2.0.0` to `main` (`a48eff5`): 2 commits. Figure fixes only. No model,
+likelihood or inference code changed, so results from 2.0.0 remain valid.
+
+### Added
+
+- **Minimum figure size.** Every `scripts/create_figure*.py` script now saves through
+  `confrdm_jax.plots.save_figure`. This makes every figure at least `min_pixels` wide and
+  tall, set to 900 in `conf_jax/figures.yaml`. A figure that would come out smaller is
+  rendered at a higher dpi, so its layout doesn't change. The helper reads the saved file
+  back and raises an error if the figure is still too small.
+
+### Changed
+
+- At 900 px, nine figures render at a higher dpi than before:
+  - `c2st_single_rdm`
+  - `coverage_single_{rdm,crdm}`
+  - `parameter_cross_recovery_hierarchical_subject_rdm`
+  - `posterior_contraction_single_{rdm,crdm}`
+  - `parameter_recovery_single_crdm`
+  - `sbc_single_crdm`
+  - `timing_comparison`
+
+  The wide one-row figures get correspondingly wide: `coverage_single_crdm` is 7219×903 px.
+  Figures that already met the minimum keep their size.
+- `c2st_single_rdm` is now saved with a tight bounding box, like every other figure.
+
+### Fixed
+
+- **CRDM illustration: amplitude label.** The inset plots the pulse's drift rate η(t), and
+  the ζ label pointed at its peak, which is about 3.5 as t → 0. ζ is the peak of the
+  integrated pulse C(t), reached at t = τ. Equivalently, it is the area under η(t) from 0
+  to τ. The inset now shades that area and labels it ζ. The τ marker, at η's zero crossing,
+  was already correct.
+
+## [2.0.0] - 2026-10-09
 
 Changes from `v1.0.0` (`c70848b`, 8 Jul 2026) to `main` (`24c4c69`, PR #5): 52 commits.
 
@@ -138,4 +174,5 @@ and fixes the flow recipe and run layout the paper reports.
 - `rdm_prior` and `crdm_prior`. Nothing called them, and they were missing the log-Jacobian.
 - The per-variant SLURM scripts. The variants are now configured in the experiment config.
 
-[2.0.0]: https://github.com/maltelueken/racing-diffusion-conflict/compare/v1.0.0...main
+[2.1.0]: https://github.com/maltelueken/racing-diffusion-conflict/compare/v2.0.0...main
+[2.0.0]: https://github.com/maltelueken/racing-diffusion-conflict/compare/v1.0.0...v2.0.0
